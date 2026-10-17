@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llunascope"
+version = "1.0.0"
+description = "From a single company name to every forgotten subsidiary and shadow root domain. Zero packets. Zero API keys. Full evidence chains."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Llunatics" }]
+keywords = ["easm", "recon", "osint", "ct-logs", "attack-surface"]
+dependencies = ["requests>=2.28", "rich>=13"]
+
+[project.urls]
+Homepage = "https://github.com/Llunatics/llunascope"
+
+[project.scripts]
+llunascope = "llunascope.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llunascope*"]
