@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
 
     fmt = args.format
     if fmt == "tree":
-        render.print_tree(seed_label, result.edges)
+        render.print_tree(seed_label, result.edges, seed_roots=seeds)
     elif fmt == "mermaid":
         print(render.to_mermaid(seed_label, result.edges))
     elif fmt == "dot":

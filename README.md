@@ -124,6 +124,16 @@ Dependencies: `requests`, `rich` (graceful plain-text fallback if missing).
 No API keys. No configuration. No packets sent to target infrastructure —
 only public APIs (crt.sh, RIPE Stat, Wikidata, SEC EDGAR, RDAP) are queried.
 
+## Development
+
+| Command | What it does |
+|---|---|
+| `python3 -m unittest discover -s tests` | 33 offline unit tests: scoring math, name/domain normalization, all output formats |
+| `python3 -c "import sys; sys.path.insert(0,'tests'); import doh_shim; ..."` | run live tests on networks where port-53 DNS is intercepted |
+
+`tests/doh_shim.py` is a test-only DNS-over-HTTPS shim for such networks —
+not packaged, not needed on normal machines.
+
 ## Roadmap (v1.1)
 
 - **M&A radar** — flag when two orgs' certs/ASN suddenly converge (acquisition signal)

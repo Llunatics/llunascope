@@ -26,10 +26,16 @@ def _children_map(edges: list[Edge]) -> dict[str, list[Edge]]:
     return m
 
 
-def print_tree(seed_label: str, edges: list[Edge], file=None) -> None:
-    """Pretty lineage tree. rich if available, else plain ASCII."""
+def print_tree(seed_label: str, edges: list[Edge], file=None,
+               seed_roots: list[str] | None = None) -> None:
+    """Pretty lineage tree. rich if available, else plain ASCII.
+
+    seed_roots: the actual seed domain names — edge `via` fields carry these,
+    never the display label, so they must be supplied for children to render.
+    """
     out = file or sys.stdout
     kids = _children_map(edges)
+    roots = seed_roots or []
 
     def label(e: Edge) -> str:
         return f"{e.target}  [{e.confidence:g}%]"
@@ -56,8 +62,8 @@ def print_tree(seed_label: str, edges: list[Edge], file=None) -> None:
                         ev.add(f"[dim]{evd.signal}: {evd.detail}[/dim]")
                 add(branch, e.target, depth + 1)
 
-        add(tree, "SEED", 0)
-        # Also attach edges whose via is a seed domain name.
+        for r in roots:
+            add(tree, r, 0)
         console.print(tree)
         return
 
@@ -83,7 +89,8 @@ def print_tree(seed_label: str, edges: list[Edge], file=None) -> None:
                 print(f"{ev_prefix}\u00b7 {evd.signal}: {evd.detail}", file=out)
             walk(e.target, ev_prefix, depth + 1)
 
-    walk("SEED", "", 0)
+    for r in roots:
+        walk(r, "", 0)
 
 
 def to_mermaid(seed_label: str, edges: list[Edge]) -> str:
@@ -138,7 +145,7 @@ def to_json(seed_label: str, company: str, edges: list[Edge],
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llunascope — {company}</title>
+<title>llunascope — {company_html}</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <style>
   body {{ background:#0d1117; color:#c9d1d9; font-family:system-ui,sans-serif; margin:0; padding:2rem; }}

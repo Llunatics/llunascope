@@ -356,10 +356,10 @@ def pivot(seed_domains: list[str], verbose_cb=None,
             edge = _edge_for(result.edges, rd, domain) or Edge(rd, domain, hop + 1)
             is_new = edge not in result.edges
             if not any(e.signal == "san_overlap" for e in edge.evidences):
-                serial = shared[0].cert_id[:12] if shared[0].cert_id else "n/a"
-                edge.add("san_overlap",
-                         f"{len(shared)} shared cert(s) also cover {rd} "
-                         f"(e.g. serial {serial}…)")
+                detail = f"{len(shared)} shared cert(s) also cover {rd}"
+                if shared[0].cert_id:
+                    detail += f" (e.g. serial {shared[0].cert_id[:12]}…)"
+                edge.add("san_overlap", detail)
             if polluted and not any(e.signal == "__san_ceiling__"
                                     for e in edge.evidences):
                 edge.evidences.append(Evidence(
