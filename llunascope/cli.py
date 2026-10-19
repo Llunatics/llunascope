@@ -103,11 +103,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- Hop 0: seed resolution -------------------------------------
     if seed_domains:
-        # Normalize: --seed takes human input ("WWW.Acme.COM.", "https://…",
-        # "acme"), never raw strings. Drop anything that isn't a domain.
+        # Normalize: --seed takes human input ("WWW.Acme.COM.",
+        # "https://acme.com:8080/x?y=1"), never raw strings.
+        # Drop anything that isn't a domain.
         seeds = []
         for s in seed_domains:
-            rd = root_domain(s.split("//")[-1].split("/")[0].split("?")[0])
+            host = s.split("//")[-1].split("/")[0].split("?")[0].split("#")[0]
+            host = host.rsplit("@", 1)[-1]  # strip userinfo
+            host = host.split(":")[0]       # strip port (fuzz round 2:
+                                            # "…co.id:8080/x" jadi "co.id:8080")
+            rd = root_domain(host)
             if rd and rd not in seeds:
                 seeds.append(rd)
         if not seeds:

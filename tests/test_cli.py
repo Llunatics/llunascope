@@ -79,6 +79,17 @@ class TestSeedFlag(unittest.TestCase):
         self.assertIn("example.co.id", lines)
         self.assertIn("example.com", lines)
 
+    def test_seed_strips_port_and_userinfo(self):
+        # fuzz round 2: "…co.id:8080/x" dulu jadi seed sampah "co.id:8080"
+        rc, out, _ = self._run(
+            ["--seed", "http://www.example.co.id:8080/x,https://user:pw@shop.example.com/a?b=1",
+             "--roots-only", "Acme"])
+        self.assertEqual(rc, 0)
+        lines = out.split()
+        self.assertIn("example.co.id", lines)
+        self.assertIn("example.com", lines)
+        self.assertFalse(any("8080" in l or "@" in l for l in lines))
+
     def test_seed_garbage_is_dropped(self):
         rc, out, _ = self._run(
             ["--seed", "not a domain!!!,example.com", "--roots-only",
