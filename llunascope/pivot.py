@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import net
 from .normalize import root_domain
-from .scoring import Edge, Evidence, SAN_CEILING, WEIGHTS
+from .scoring import Edge, Evidence, SAN_CEILING
 
 CRTSH_URL = "https://crt.sh/"
 CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
