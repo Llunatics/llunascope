@@ -102,3 +102,39 @@ class TestSeedFlag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDisambiguate(unittest.TestCase):
+    def test_no_entities(self):
+        self.assertIsNone(cli._disambiguate([], "Acme", True))
+
+    def test_single_entity_auto(self):
+        e = {"label": "Acme", "qid": "Q1", "sim": 0.9}
+        self.assertEqual(cli._disambiguate([e], "Acme", True), e)
+
+    def test_multi_non_interactive_picks_best(self):
+        ents = [{"label": "Acme", "qid": "Q1", "sim": 0.5},
+                {"label": "Acme Corp", "qid": "Q2", "sim": 0.9}]
+        err = io.StringIO()
+        with redirect_stderr(err):
+            chosen = cli._disambiguate(ents, "Acme", True)
+        self.assertEqual(chosen["qid"], "Q2")
+        self.assertIn("auto-selected", err.getvalue())
+
+    def test_multi_interactive_choice(self):
+        ents = [{"label": "Acme", "qid": "Q1", "sim": 0.5},
+                {"label": "Acme Corp", "qid": "Q2", "sim": 0.9}]
+        with mock.patch.object(cli, "_is_tty", return_value=True), \
+             mock.patch("builtins.input", return_value="2"):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                chosen = cli._disambiguate(ents, "Acme", False)
+        self.assertEqual(chosen["qid"], "Q2")
+
+    def test_interactive_reject_all(self):
+        ents = [{"label": "A", "qid": "Q1", "sim": 0.5},
+                {"label": "B", "qid": "Q2", "sim": 0.4}]
+        with mock.patch.object(cli, "_is_tty", return_value=True), \
+             mock.patch("builtins.input", return_value="0"):
+            with redirect_stderr(io.StringIO()):
+                self.assertIsNone(cli._disambiguate(ents, "Acme", False))
