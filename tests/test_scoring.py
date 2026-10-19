@@ -25,11 +25,9 @@ class TestWeights(unittest.TestCase):
 
     def test_capped_at_99(self):
         # All signals at once would exceed 100 without the cap.
-        e = _edge("san_overlap", "org_tuple", "asn_match",
-                  "registry_hint", "rdap_org", "seed_direct")
+        e = _edge("san_overlap", "org_tuple", "asn_match", "rdap_org")
         total = sum(WEIGHTS[s] for s in
-                    ("san_overlap", "org_tuple", "asn_match",
-                     "registry_hint", "rdap_org", "seed_direct"))
+                    ("san_overlap", "org_tuple", "asn_match", "rdap_org"))
         self.assertGreater(total, MAX_CONFIDENCE)
         self.assertEqual(e.confidence, MAX_CONFIDENCE)
 

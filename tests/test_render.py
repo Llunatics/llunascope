@@ -66,10 +66,41 @@ class TestFormats(unittest.TestCase):
         self.assertIn("aol_com", m)
         self.assertIn("40%", m)
 
+    def test_mermaid_connects_seed_to_hop1(self):
+        m = render.to_mermaid("yahoo.com", self.edges)
+        seed_id = m.splitlines()[1].split("[")[0].strip()
+        self.assertIn(f"{seed_id} --> aol_com", m)
+
+    def test_mermaid_escapes_quotes_in_labels(self):
+        m = render.to_mermaid('evil"seed', self.edges)
+        # A raw '"' would break the quoted mermaid label syntax.
+        self.assertNotIn('["\U0001f319 evil"seed"]', m)
+        self.assertIn("#quot;", m)
+
+    def test_mermaid_node_ids_are_unique(self):
+        # 'a-b.com' and 'a_b.com' both naive-sanitize to 'a_b_com' — they
+        # must not collapse into one graph node.
+        edges = [_edge("a-b.com", "seed.com"), _edge("a_b.com", "seed.com")]
+        m = render.to_mermaid("seed.com", edges)
+        self.assertIn("a_b_com", m)
+        self.assertIn("a_b_com_2", m)
+
     def test_dot_is_valid_shape(self):
         d = render.to_dot("yahoo.com", self.edges)
         self.assertIn("digraph llunascope", d)
         self.assertIn('"yahoo.com" -> "aol.com"', d)
+
+    def test_dot_escapes_quotes(self):
+        evil = 'evil"seed'
+        d = render.to_dot(evil, self.edges)
+        # A raw '"' inside a DOT label would break the syntax; it must be
+        # backslash-escaped.
+        self.assertIn("evil" + chr(92) + '"seed', d)
+        seed_line = [ln for ln in d.splitlines()
+                     if ln.strip().startswith('"SEED"')][0]
+        # After removing escaped quotes, quotes must be balanced.
+        stripped = seed_line.replace(chr(92) + '"', "")
+        self.assertEqual(stripped.count('"') % 2, 0)
 
     def test_json_parses(self):
         j = render.to_json("yahoo.com", "Yahoo", self.edges,
@@ -87,6 +118,15 @@ class TestFormats(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", h)
         self.assertIn("&lt;script&gt;", h)
         self.assertIn("mermaid", h)
+
+    def test_html_escapes_mermaid_block(self):
+        # The mermaid source is embedded in the HTML body: a hostile company
+        # name must not break out of the <div class="mermaid">.
+        payload = '</div><script>alert(1)</script><div class="'
+        h = render.to_html(payload, payload, self.edges,
+                           {"yahoo.com", "aol.com"}, {})
+        self.assertNotIn(payload, h)
+        self.assertIn("&lt;/div&gt;", h)
 
 
 if __name__ == "__main__":

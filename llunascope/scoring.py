@@ -8,9 +8,7 @@ Signal weights (v1):
   SAN_OVERLAP      40  — two root domains share a TLS certificate (CT logs)
   ORG_TUPLE        35  — two root domains share an exact Subject.O (OV/EV cert)
   ASN_MATCH        25  — two root domains resolve into the same non-ignored ASN
-  REGISTRY_HINT    30  — corporate registry link (Wikidata subsidiary/parent, EDGAR)
   RDAP_ORG         15  — same RDAP org handle (weak: post-GDPR redaction)
-  SEED_DIRECT      95  — user-supplied --seed domain (trusted input)
 
 Penalties:
   SAN_CEILING       x0.2 — cert with >30 distinct root domains in SAN
@@ -28,10 +26,11 @@ WEIGHTS = {
     "san_overlap": 40.0,
     "org_tuple": 35.0,
     "asn_match": 25.0,
-    "registry_hint": 30.0,
     "rdap_org": 15.0,
-    "seed_direct": 95.0,
 }
+# NOTE: seed domains (Hop-0 resolved or --seed) are trusted ROOTS, not graded
+# edges — they carry no signal weight. Registry leads (Wikidata subsidiaries,
+# EDGAR listings, PeeringDB orgs) are surfaced as follow-up hints, not edges.
 
 SAN_CEILING = 30          # distinct root domains in one cert -> shared-cert penalty
 SAN_CEILING_FACTOR = 0.2

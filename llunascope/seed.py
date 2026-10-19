@@ -7,6 +7,7 @@ OpenCorporates (bot-blocked).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from . import net
@@ -21,8 +22,8 @@ EDGAR_UA = "Llunascope admin@llunaticsys.web.id"
 
 @dataclass
 class SeedCandidate:
-    kind: str            # 'domain' | 'asn'
-    value: str           # root domain or 'AS1234'
+    kind: str            # 'domain' | 'asn' | 'hint' (name lead, not a domain)
+    value: str           # root domain, 'AS1234', or org name for hints
     source: str          # 'wikidata' | 'edgar' | 'peeringdb' | 'seed-flag'
     confidence: float    # 0..100
     evidence: str        # human-readable provenance
@@ -54,6 +55,10 @@ def _wikidata_label_search(name: str) -> list[dict]:
 
 def _wikidata_claims(qid: str) -> dict:
     """Pull P856 (website), P355 (subsidiary), P749 (parent) for an entity."""
+    # Defense in depth: the qid is interpolated into SPARQL, so enforce the
+    # strict Wikidata entity-id shape even though it comes from their API.
+    if not re.fullmatch(r"Q\d+", qid or ""):
+        return {}
     query = f"""SELECT ?website ?sub ?subLabel ?parent ?parentLabel WHERE {{
       OPTIONAL {{ wd:{qid} wdt:P856 ?website. }}
       OPTIONAL {{ wd:{qid} wdt:P355 ?sub. }}
@@ -92,8 +97,8 @@ def _domain_from_url(url: str) -> str:
         return ""
 
 
-def wikidata_seeds(name: str) -> tuple[list[SeedCandidate], list[dict]]:
-    """Returns (candidates, matched_entities_for_disambiguation)."""
+def wikidata_seeds(name: str) -> tuple[list[SeedCandidate], list[SeedCandidate], list[dict]]:
+    """Returns (domain_candidates, hint_candidates, matched_entities)."""
     entities = _wikidata_label_search(name)
     candidates: list[SeedCandidate] = []
     for ent in entities:
@@ -122,7 +127,7 @@ def wikidata_seeds(name: str) -> tuple[list[SeedCandidate], list[dict]]:
             seen[c.value] = c
     domains = list(seen.values())
     hints = [c for c in candidates if c.kind == "hint"]
-    return domains, [{"label": e["label"], "qid": e["id"], "sim": round(e["sim"], 2)} for e in entities]
+    return domains, hints, [{"label": e["label"], "qid": e["id"], "sim": round(e["sim"], 2)} for e in entities]
 
 
 def edgar_seeds(name: str) -> list[SeedCandidate]:
@@ -183,9 +188,9 @@ def resolve(name: str, seed_domains: list[str] | None = None
                                              "user-supplied --seed domain"))
         return domains, others, entities
 
-    wd_domains, entities = wikidata_seeds(name)
+    wd_domains, wd_hints, entities = wikidata_seeds(name)
     domains.extend(wd_domains)
-    others.extend([c for c in wd_domains if c.kind == "hint"])
+    others.extend(wd_hints)
     others.extend(edgar_seeds(name))
     others.extend(peeringdb_seeds(name))
     return domains, others, entities

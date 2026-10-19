@@ -39,8 +39,11 @@ score**. No black-box claims: you can see exactly *why* each domain is linked.
 
 **Hop 0 — Seed Resolver.** The company name is resolved to root domains and
 ASNs via public registries only: Wikidata (official website), SEC EDGAR (US
-public companies), RIPE Stat, PeeringDB. Don't trust name resolution? Skip it:
-`--seed` lets you supply known domains directly.
+public companies), RIPE Stat, PeeringDB. Wikidata subsidiary names, EDGAR
+matches, and PeeringDB orgs that don't yield domains are printed as follow-up
+leads. Don't trust name resolution? Skip it: `--seed` lets you supply known
+domains directly (normalized automatically — case, `www.`, trailing dots,
+and URLs are cleaned).
 
 **Hops 1–3 — Horizontal Pivot Engine.** Expands via certificate-transparency
 SAN overlaps, ASN co-location, RDAP org handles, and Subject.O tuple matching
@@ -56,9 +59,11 @@ confidence. The weights are published below — audit them, challenge them.
 | `san_overlap` | 40 | Two root domains share a TLS certificate in CT logs |
 | `org_tuple` | 35 | Identical Subject.O on OV/EV certificates (very strong) |
 | `asn_match` | 25 | Both resolve into the same non-cloud ASN |
-| `registry_hint` | 30 | Wikidata subsidiary/parent link, or SEC EDGAR listing |
 | `rdap_org` | 15 | Same RDAP org handle (weak — post-GDPR redaction) |
-| `seed_direct` | 95 | You supplied it via `--seed` (trusted input) |
+
+Seed domains (Hop-0 resolved or `--seed`) are trusted roots, not graded edges —
+they carry no signal weight. Registry leads (Wikidata subsidiary names, SEC
+EDGAR listings, PeeringDB orgs) are printed as follow-up hints, not edges.
 
 Anti–false-positive rules: cloud/CDN/large-ISP ASNs (AWS, Cloudflare, Google,
 Telkom Indonesia, …) are **never** pivoted on; certificates covering >30
@@ -128,7 +133,7 @@ only public APIs (crt.sh, RIPE Stat, Wikidata, SEC EDGAR, RDAP) are queried.
 
 | Command | What it does |
 |---|---|
-| `python3 -m unittest discover -s tests` | 33 offline unit tests: scoring math, name/domain normalization, all output formats |
+| `python3 -m unittest discover -s tests` | 68 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping |
 | `python3 -c "import sys; sys.path.insert(0,'tests'); import doh_shim; ..."` | run live tests on networks where port-53 DNS is intercepted |
 
 `tests/doh_shim.py` is a test-only DNS-over-HTTPS shim for such networks —

@@ -103,11 +103,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- Hop 0: seed resolution -------------------------------------
     if seed_domains:
-        seeds = seed_domains
+        # Normalize: --seed takes human input ("WWW.Acme.COM.", "https://…",
+        # "acme"), never raw strings. Drop anything that isn't a domain.
+        seeds = []
+        for s in seed_domains:
+            rd = root_domain(s.split("//")[-1].split("/")[0].split("?")[0])
+            if rd and rd not in seeds:
+                seeds.append(rd)
+        if not seeds:
+            print("[llunascope] --seed contained no valid domains.",
+                  file=sys.stderr)
+            return 2
         if verbose:
             verbose(f"using --seed domains: {', '.join(seeds)}")
     else:
-        domains, _others, entities = seedmod.resolve(company)
+        domains, hints, entities = seedmod.resolve(company)
         chosen = _disambiguate(entities, company, args.non_interactive)
         if chosen is None and entities and len(entities) > 1:
             # User explicitly rejected all candidates (picked "0").
@@ -129,6 +139,14 @@ def main(argv: list[str] | None = None) -> int:
                 seeds = [c.value for c in domains]
         else:
             seeds = [c.value for c in domains]
+        if hints and (verbose or _is_tty()):
+            # Registry hints (Wikidata subsidiaries, EDGAR listings, PeeringDB
+            # orgs) are leads, not seeds: print them so the user can follow up
+            # with --seed instead of silently discarding them.
+            print("[llunascope] registry hints (leads — try --seed):",
+                  file=sys.stderr)
+            for h in hints[:10]:
+                print(f"  · {h.value} — {h.evidence}", file=sys.stderr)
         if not seeds:
             print(f"[llunascope] could not resolve {company!r} to any root domain.\n"
                   f"  Try: llunascope --seed example.com,example.co.id \"{company}\"\n"

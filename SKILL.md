@@ -48,9 +48,11 @@ llunascope "Apple" --non-interactive --format json
    - `san_overlap` (40): two root domains share a TLS cert in CT logs
    - `org_tuple` (35): identical Subject.O on OV/EV certs (very strong)
    - `asn_match` (25): same non-cloud ASN (cloud/CDN ASNs never pivoted on)
-   - `registry_hint` (30): Wikidata subsidiary/parent, EDGAR listing
    - `rdap_org` (15): same RDAP handle (weak post-GDPR)
    - Shared CDN/WAF certs (>30 roots in one SAN) are penalized ×0.2.
+   - Seed domains are trusted roots (no signal weight); registry leads
+     (Wikidata subsidiary names, EDGAR listings, PeeringDB orgs) print as
+     follow-up hints, not edges.
 3. Every edge shows **why** it exists — check the evidence chain before
    trusting a link. Confidence is heuristic, not proof.
 
