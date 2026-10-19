@@ -28,6 +28,15 @@ def _children_map(edges: list[Edge]) -> dict[str, list[Edge]]:
     return m
 
 
+_TERM_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _term_safe(s) -> str:
+    """Strip control chars so data from public APIs (RDAP org names, cert
+    subjects) can't inject terminal escapes into the tree output."""
+    return _TERM_UNSAFE.sub("", s if isinstance(s, str) else str(s))
+
+
 def print_tree(seed_label: str, edges: list[Edge], file=None,
                seed_roots: list[str] | None = None) -> None:
     """Pretty lineage tree. rich if available, else plain ASCII.
@@ -40,11 +49,11 @@ def print_tree(seed_label: str, edges: list[Edge], file=None,
     roots = seed_roots or []
 
     def label(e: Edge) -> str:
-        return f"{e.target}  [{e.confidence:g}%]"
+        return f"{_term_safe(e.target)}  [{e.confidence:g}%]"
 
     if RICH and out.isatty():
         console = Console(file=out)
-        tree = Tree(f"[bold magenta]\U0001f319 {seed_label}[/bold magenta]")
+        tree = Tree(f"[bold magenta]\U0001f319 {_term_safe(seed_label)}[/bold magenta]")
         seen: set[str] = set()
 
         def add(node: Tree, via: str, depth: int) -> None:
@@ -55,14 +64,14 @@ def print_tree(seed_label: str, edges: list[Edge], file=None,
                     continue
                 seen.add(e.target)
                 branch = node.add(
-                    f"[cyan]{rich_escape(e.target)}[/cyan]  [dim][{e.confidence:g}%][/dim]")
+                    f"[cyan]{rich_escape(_term_safe(e.target))}[/cyan]  [dim][{e.confidence:g}%][/dim]")
                 if e.evidences:
                     ev = branch.add("[dim]evidence[/dim]")
                     for evd in e.evidences:
                         if evd.signal.startswith("__"):
                             continue
-                        ev.add(f"[dim]{rich_escape(evd.signal)}: "
-                               f"{rich_escape(evd.detail)}[/dim]")
+                        ev.add(f"[dim]{rich_escape(_term_safe(evd.signal))}: "
+                               f"{rich_escape(_term_safe(evd.detail))}[/dim]")
                 add(branch, e.target, depth + 1)
 
         for r in roots:
@@ -71,7 +80,7 @@ def print_tree(seed_label: str, edges: list[Edge], file=None,
         return
 
     # ASCII fallback.
-    print(f"\U0001f319 {seed_label}", file=out)
+    print(f"\U0001f319 {_term_safe(seed_label)}", file=out)
     seen = set()
 
     def walk(via: str, prefix: str, depth: int) -> None:
@@ -89,7 +98,7 @@ def print_tree(seed_label: str, edges: list[Edge], file=None,
             for evd in e.evidences:
                 if evd.signal.startswith("__"):
                     continue
-                print(f"{ev_prefix}\u00b7 {evd.signal}: {evd.detail}", file=out)
+                print(f"{ev_prefix}\u00b7 {_term_safe(evd.signal)}: {_term_safe(evd.detail)}", file=out)
             walk(e.target, ev_prefix, depth + 1)
 
     for r in roots:

@@ -131,3 +131,20 @@ class TestFormats(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAnsiInjection(unittest.TestCase):
+    def test_ascii_tree_strips_escapes(self):
+        from llunascope.scoring import Edge, Evidence
+        e = Edge(target="evil\x1b[31m.com", via="seed.com", hop=1,
+                 evidences=[Evidence(signal="san", detail="x\x1b[2Jy",
+                                     weight=40)],
+                 confidence=40.0)
+        buf = io.StringIO()
+        render.print_tree("seed\x07.com", [e], file=buf, seed_roots=["seed.com"])
+        out = buf.getvalue()
+        # No C0 control chars survive (the ESC is gone; the leftover
+        # "[31m" is inert printable text, not an escape sequence).
+        self.assertFalse(any(ord(c) < 32 and c != "\n" or ord(c) == 127
+                             for c in out))
+        self.assertIn("evil", out)
