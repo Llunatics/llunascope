@@ -151,5 +151,36 @@ class TestOrgTuple(PivotTestBase):
         self.assertEqual(res.org_identities["a.com"], "Acme Corp")
 
 
+class TestCertFetchLimits(PivotTestBase):
+    """Deep-8 M14: hop-0 gets the large CT-log limit, deeper hops the small one."""
+
+    def test_hop0_gets_500_deeper_hops_get_150(self):
+        seen = {}
+
+        def rec(d, limit=500):
+            seen[d] = limit
+            if d == "s.com":
+                return [_cert("1", {"s.com", "b.com"})]
+            return []
+
+        self.m["fetch_certs"].side_effect = rec
+        self.run_pivot(["s.com"])
+        self.assertEqual(seen.get("s.com"), 500)
+        self.assertEqual(seen.get("b.com"), 150)
+
+
+class TestAsnPrefixBoundary(PivotTestBase):
+    """Deep-8 M17: a prefix of exactly /16 is still pivotable (<=, not <)."""
+
+    def test_slash16_prefix_is_still_pivotable(self):
+        self.m["resolve_ips"].return_value = ["1.2.3.4"]
+        self.m["ip_to_asn"].return_value = pivot.AsnInfo(47611, "1.2.0.0/16",
+                                                        2 ** 16)
+        res = self.run_pivot(["a.com", "b.com"], {})
+        asn_edges = [e for e in res.edges
+                     if any(s.signal == "asn_match" for s in e.evidences)]
+        self.assertTrue(asn_edges)
+
+
 if __name__ == "__main__":
     unittest.main()
