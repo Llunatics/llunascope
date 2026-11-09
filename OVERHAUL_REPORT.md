@@ -119,5 +119,6 @@ Per Operator Note 5, the following audit findings were confirmed to not exist in
 ## 6. Git & Push Status
 
 *   **Working branch:** `overhaul/marathon-2026-11-09`
-*   **Commit status:** Staged and committed on `overhaul/marathon-2026-11-09`.
-*   **Push status:** Evaluated per Operator Note 6.
+*   **Commit Hash:** `48ecb26`
+*   **Commit Message:** `Overhaul llunascope: fix parsing, scoring bounds, caching, and CLI polish`
+*   **Push Status:** As anticipated in Operator Note 6, pushing from this machine failed with credentials error (`fatal: could not read Username for 'https://github.com': No such device or address`). The commit is cleanly preserved on the `overhaul/marathon-2026-11-09` branch for the operator to transfer and push.
