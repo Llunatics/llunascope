@@ -56,6 +56,26 @@ class TestWeights(unittest.TestCase):
     def test_ceiling_constant_sanity(self):
         self.assertEqual(SAN_CEILING, 30)
 
+    def test_adversarial_evidence_clamped(self):
+        # Empty evidence produces 0.0 float
+        e_empty = Edge("target.example", "seed.example", 1).finalize()
+        self.assertEqual(e_empty.confidence, 0.0)
+        self.assertIsInstance(e_empty.confidence, float)
+
+        # Negative weight is clamped to 0.0
+        e_neg = Edge("target.example", "seed.example", 1)
+        e_neg.evidences.append(Evidence("custom_neg", "negative signal", -50.0))
+        e_neg.finalize()
+        self.assertEqual(e_neg.confidence, 0.0)
+        self.assertIsInstance(e_neg.confidence, float)
+
+        # Extreme positive weight clamped to MAX_CONFIDENCE (99.0)
+        e_huge = Edge("target.example", "seed.example", 1)
+        e_huge.evidences.append(Evidence("custom_huge", "huge signal", 999.0))
+        e_huge.finalize()
+        self.assertEqual(e_huge.confidence, 99.0)
+        self.assertIsInstance(e_huge.confidence, float)
+
 
 if __name__ == "__main__":
     unittest.main()

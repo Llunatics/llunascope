@@ -15,9 +15,15 @@ class TestDomainFromUrl(unittest.TestCase):
     def test_bare_domain(self):
         self.assertEqual(seed._domain_from_url("example.com"), "example.com")
 
+    def test_uppercase_url_scheme_and_domain(self):
+        self.assertEqual(seed._domain_from_url("HTTPS://WWW.EXAMPLE.COM/PATH"), "example.com")
+        self.assertEqual(seed._domain_from_url("HTTP://SHOP.EXAMPLE.CO.ID:8080/"), "example.co.id")
+
     def test_garbage_returns_empty(self):
         self.assertEqual(seed._domain_from_url("not a url"), "")
         self.assertEqual(seed._domain_from_url(""), "")
+        self.assertEqual(seed._domain_from_url(None), "")
+        self.assertEqual(seed._domain_from_url(123), "")
 
 
 class TestResolveSeedFlag(unittest.TestCase):
@@ -33,6 +39,11 @@ class TestResolveSeedFlag(unittest.TestCase):
     def test_seed_garbage_dropped(self):
         domains, _, _ = seed.resolve("Acme", seed_domains=["!!!"])
         self.assertEqual(domains, [])
+
+    def test_seed_duplicates_collapsed(self):
+        domains, _, _ = seed.resolve("Acme", seed_domains=["EXAMPLE.COM", "example.com"])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].value, "example.com")
 
 
 class TestWikidataSeeds(unittest.TestCase):

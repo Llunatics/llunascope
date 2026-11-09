@@ -39,6 +39,32 @@ class TestCliBasics(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("san_overlap", buf.getvalue())
 
+    def test_help_exits_0(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as cm:
+                cli.build_parser().parse_args(["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("usage: llunascope", buf.getvalue())
+
+    def test_keyboard_interrupt_exits_130(self):
+        with mock.patch("llunascope.cli._run_main", side_effect=KeyboardInterrupt):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                rc = cli.main(["Acme"])
+            self.assertEqual(rc, 130)
+            self.assertIn("interrupted by user", err.getvalue())
+
+    def test_render_error_exits_1(self):
+        with mock.patch.object(net, "check_online", return_value=True), \
+             mock.patch("llunascope.cli.pivot", side_effect=_fake_pivot), \
+             mock.patch("llunascope.render.to_json", side_effect=TypeError("unserializable")):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                rc = cli.main(["--seed", "example.com", "--format", "json", "Acme"])
+            self.assertEqual(rc, 1)
+            self.assertIn("failed to render", err.getvalue())
+
     def test_no_args_prints_help_and_exits_2(self):
         buf = io.StringIO()
         with redirect_stderr(buf):
@@ -109,6 +135,25 @@ class TestSeedFlag(unittest.TestCase):
              "Acme"])
         self.assertEqual(rc, 0)
         self.assertEqual(out.split().count("example.com"), 1)
+
+
+class TestHintsOutput(unittest.TestCase):
+    def test_hints_truncated_and_no_truncate(self):
+        from llunascope.seed import SeedCandidate
+        fake_hints = [SeedCandidate("hint", f"lead{i}", "edgar", 70.0, f"lead {i}") for i in range(15)]
+        with mock.patch.object(net, "check_online", return_value=True), \
+             mock.patch("llunascope.seed.resolve", return_value=([SeedCandidate("domain", "acme.com", "wd", 90.0, "p856")], fake_hints, [])), \
+             mock.patch("llunascope.cli.pivot", side_effect=_fake_pivot):
+            err1 = io.StringIO()
+            with redirect_stderr(err1), redirect_stdout(io.StringIO()):
+                cli.main(["Acme", "--non-interactive", "--roots-only", "-v"])
+            self.assertIn("truncated, 5 more leads", err1.getvalue())
+
+            err2 = io.StringIO()
+            with redirect_stderr(err2), redirect_stdout(io.StringIO()):
+                cli.main(["Acme", "--non-interactive", "--roots-only", "-v", "--no-truncate"])
+            self.assertNotIn("truncated", err2.getvalue())
+            self.assertIn("lead14", err2.getvalue())
 
 
 if __name__ == "__main__":

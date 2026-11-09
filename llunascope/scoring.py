@@ -62,7 +62,7 @@ class Edge:
         if any(e.signal == "__san_ceiling__" for e in self.evidences):
             total *= SAN_CEILING_FACTOR
             self.penalized = True
-        self.confidence = round(min(MAX_CONFIDENCE, total), 1)
+        self.confidence = float(round(max(0.0, min(MAX_CONFIDENCE, total)), 1))
         return self
 
     def summary(self) -> str:

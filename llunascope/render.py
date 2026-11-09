@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import io
 import json
 import re
 import sys
@@ -38,11 +39,12 @@ def _term_safe(s) -> str:
 
 
 def print_tree(seed_label: str, edges: list[Edge], file=None,
-               seed_roots: list[str] | None = None) -> None:
+               seed_roots: list[str] | None = None, max_depth: int = 5) -> None:
     """Pretty lineage tree. rich if available, else plain ASCII.
 
     seed_roots: the actual seed domain names — edge `via` fields carry these,
     never the display label, so they must be supplied for children to render.
+    max_depth: maximum depth to traverse in the tree (default: 5).
     """
     out = file or sys.stdout
     kids = _children_map(edges)
@@ -51,13 +53,13 @@ def print_tree(seed_label: str, edges: list[Edge], file=None,
     def label(e: Edge) -> str:
         return f"{_term_safe(e.target)}  [{e.confidence:g}%]"
 
-    if RICH and out.isatty():
+    if RICH and hasattr(out, "isatty") and out.isatty():
         console = Console(file=out)
         tree = Tree(f"[bold magenta]\U0001f319 {_term_safe(seed_label)}[/bold magenta]")
         seen: set[str] = set()
 
         def add(node: Tree, via: str, depth: int) -> None:
-            if depth > 4:
+            if depth >= max_depth:
                 return
             for e in kids.get(via, []):
                 if e.target in seen:
@@ -84,7 +86,7 @@ def print_tree(seed_label: str, edges: list[Edge], file=None,
     seen = set()
 
     def walk(via: str, prefix: str, depth: int) -> None:
-        if depth > 4:
+        if depth >= max_depth:
             return
         items = kids.get(via, [])
         for i, e in enumerate(items):
@@ -105,12 +107,30 @@ def print_tree(seed_label: str, edges: list[Edge], file=None,
         walk(r, "", 0)
 
 
+def render_tree(seed_label: str, edges: list[Edge], file=None,
+                seed_roots: list[str] | None = None, max_depth: int = 5) -> str:
+    """Render ASCII tree as a string (with guaranteed single trailing newline)."""
+    buf = io.StringIO()
+    print_tree(seed_label, edges, file=buf, seed_roots=seed_roots, max_depth=max_depth)
+    out = buf.getvalue()
+    if not out.endswith("\n"):
+        out += "\n"
+    if file:
+        file.write(out)
+    return out
+
+
 def _mermaid_label(s: str) -> str:
     """Make a string safe for a mermaid quoted node label.
 
     Double quotes are mermaid-escaped as #quot; — newlines are flattened.
+    Angle brackets are escaped to avoid tag interpretation in Mermaid.
     """
-    return s.replace('"', "#quot;").replace("\n", " ").replace("\r", "")
+    return (s.replace('"', "#quot;")
+            .replace("<", "#lt;")
+            .replace(">", "#gt;")
+            .replace("\n", " ")
+            .replace("\r", ""))
 
 
 def _unique_ids(names: list[str]) -> dict[str, str]:
@@ -180,20 +200,54 @@ def to_dot(seed_label: str, edges: list[Edge]) -> str:
 
 
 def to_json(seed_label: str, company: str, edges: list[Edge],
-            nodes: set[str], org_identities: dict) -> str:
+            nodes: set[str], org_identities: dict | None = None) -> str:
+    safe_nodes = sorted(nodes) if nodes else []
+    safe_edges = []
+    for e in (edges or []):
+        try:
+            safe_edges.append({
+                "target": str(getattr(e, "target", "")),
+                "via": str(getattr(e, "via", "")),
+                "hop": int(getattr(e, "hop", 1)),
+                "confidence": float(getattr(e, "confidence", 0.0)),
+                "evidence": [{
+                    "signal": str(getattr(x, "signal", "")),
+                    "detail": str(getattr(x, "detail", "")),
+                    "weight": float(getattr(x, "weight", 0.0)),
+                } for x in getattr(e, "evidences", [])],
+            })
+        except Exception:
+            continue
+    safe_edges.sort(key=lambda x: -x["confidence"])
     return json.dumps({
         "tool": "llunascope",
-        "company": company,
-        "seed": seed_label,
-        "nodes": sorted(nodes),
-        "org_identities": org_identities,
-        "edges": [{
-            "target": e.target, "via": e.via, "hop": e.hop,
-            "confidence": e.confidence,
-            "evidence": [{"signal": x.signal, "detail": x.detail,
-                          "weight": x.weight} for x in e.evidences],
-        } for e in sorted(edges, key=lambda x: -x.confidence)],
+        "company": str(company or ""),
+        "seed": str(seed_label or ""),
+        "nodes": safe_nodes,
+        "org_identities": org_identities or {},
+        "edges": safe_edges,
     }, indent=2, ensure_ascii=False)
+
+
+def render_json(seed_label: str = "", company: str = "", edges: list[Edge] | None = None,
+                nodes: set[str] | None = None, org_identities: dict | None = None,
+                data: dict | None = None) -> str:
+    """Render machine-readable JSON. Handles raw dict inputs and missing domain/seed keys."""
+    if data is not None and isinstance(data, dict):
+        seed_val = data.get("seed") or data.get("domain") or ""
+        company_val = data.get("company") or ""
+        nodes_val = data.get("nodes") or ([] if not seed_val else [seed_val])
+        edges_val = data.get("edges") or []
+        org_val = data.get("org_identities") or {}
+        return json.dumps({
+            "tool": data.get("tool", "llunascope"),
+            "company": str(company_val),
+            "seed": str(seed_val),
+            "nodes": sorted(nodes_val),
+            "org_identities": org_val,
+            "edges": edges_val,
+        }, indent=2, ensure_ascii=False)
+    return to_json(seed_label, company, edges or [], nodes or set(), org_identities or {})
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -231,6 +285,8 @@ Signals: san_overlap, org_tuple, asn_match, rdap_org. Weights published in READM
 
 def to_html(company: str, seed_label: str, edges: list[Edge], nodes: set[str],
             org_identities: dict) -> str:
+    display_name = company.strip() if company and isinstance(company, str) and company.strip() else (seed_label or "llunascope")
+    company_html = html.escape(display_name)
     rows = []
     for e in sorted(edges, key=lambda x: -x.confidence):
         evs = "<br>".join(
@@ -241,9 +297,12 @@ def to_html(company: str, seed_label: str, edges: list[Edge], nodes: set[str],
             f"<td><code>{html.escape(e.via)}</code></td>"
             f"<td class='conf'>{e.confidence:g}%</td><td>{evs}</td></tr>")
     return HTML_TEMPLATE.format(
-        company=company, company_html=html.escape(company),
+        company=display_name, company_html=company_html,
         # The mermaid source is embedded raw in the HTML body: escape it so a
         # hostile company/seed string cannot break out of the <div> (mermaid
         # reads the div's text content, so entities decode back harmlessly).
         mermaid=html.escape(to_mermaid(seed_label, edges)),
         rows="\n".join(rows), n_nodes=len(nodes), n_edges=len(edges))
+
+
+render_html = to_html

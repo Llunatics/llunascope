@@ -102,6 +102,13 @@ class TestBounds(PivotTestBase):
         self.assertEqual(res.nodes, {"a.com", "b.com"})
         self.assertEqual(len(res.edges), 2)  # a->b and b->a, each once
 
+    def test_self_pointing_domain_depth0_terminates(self):
+        # Domain points back to itself at depth 0
+        certs = {"a.com": [_cert("1", {"a.com"})]}
+        res = self.run_pivot(["a.com"], certs)
+        self.assertEqual(res.nodes, {"a.com"})
+        self.assertEqual(res.edges, [])
+
 
 class TestAsnSignal(PivotTestBase):
     def test_ignored_asn_never_pivots(self):
@@ -180,6 +187,67 @@ class TestAsnPrefixBoundary(PivotTestBase):
         asn_edges = [e for e in res.edges
                      if any(s.signal == "asn_match" for s in e.evidences)]
         self.assertTrue(asn_edges)
+
+
+class TestPivotSeedHandling(unittest.TestCase):
+    def test_empty_and_whitespace_seeds_consistent(self):
+        # Empty list, list with empty string, list with only whitespace must all return empty expansion
+        for bad_seed in ([], [""], ["   "], ["\t", " "]):
+            res = pivot.pivot(bad_seed)
+            self.assertEqual(res.nodes, set())
+            self.assertEqual(res.edges, [])
+
+
+class TestDeterministicOrdering(PivotTestBase):
+    def test_repeated_runs_produce_identical_order(self):
+        certs = {
+            "root.com": [
+                _cert("1", {"root.com", "z.com"}),
+                _cert("2", {"root.com", "a.com"}),
+                _cert("3", {"root.com", "m.com"}),
+            ]
+        }
+        res1 = self.run_pivot(["root.com"], certs)
+        res2 = self.run_pivot(["root.com"], certs)
+        self.assertEqual([e.target for e in res1.edges], [e.target for e in res2.edges])
+        self.assertEqual([e.confidence for e in res1.edges], [e.confidence for e in res2.edges])
+
+
+class TestErrorResilience(PivotTestBase):
+    def test_fetch_certs_raises_still_returns_partial_result(self):
+        # Even if fetch_certs raises an error, the pivot loop continues and collects other data
+        self.m["fetch_certs"].side_effect = Exception("crt.sh network failure")
+        self.m["resolve_ips"].return_value = ["1.2.3.4"]
+        self.m["ip_to_asn"].return_value = pivot.AsnInfo(47611, "1.2.3.0/24", 256)
+
+        res = self.run_pivot(["a.com", "b.com"])
+        self.assertIn("a.com", res.nodes)
+        self.assertIn("b.com", res.nodes)
+        # ASN match edges were still created despite CT error (both directions: a->b and b->a)
+        asn_edges = [e for e in res.edges if any(s.signal == "asn_match" for s in e.evidences)]
+        self.assertEqual(len(asn_edges), 2)
+
+
+class TestRipeIpCache(unittest.TestCase):
+    def setUp(self):
+        pivot.clear_ip_cache()
+        self.addCleanup(pivot.clear_ip_cache)
+
+    def test_ripe_lookup_cached_by_ip(self):
+        with mock.patch("llunascope.pivot.net.fetch_json") as mock_fetch:
+            mock_fetch.side_effect = [
+                {"data": {"asns": ["12345"]}},  # RIPE_NETINFO
+                {"data": {"records": [[{"key": "route", "value": "1.2.3.0/24"}]]}},  # RIPE_WHOIS
+            ]
+            first = pivot.ip_to_asn("1.2.3.4")
+            self.assertIsNotNone(first)
+            self.assertEqual(first.asn, 12345)
+            self.assertEqual(mock_fetch.call_count, 2)
+
+            # Second call with same IP should hit the cache without calling net.fetch_json again
+            second = pivot.ip_to_asn("1.2.3.4")
+            self.assertEqual(second, first)
+            self.assertEqual(mock_fetch.call_count, 2)
 
 
 if __name__ == "__main__":

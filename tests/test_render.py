@@ -55,6 +55,25 @@ class TestPrintTree(unittest.TestCase):
         out = buf.getvalue()
         self.assertLess(out.index("hi.com"), out.index("lo.com"))
 
+    def test_render_tree_trailing_newline(self):
+        edges = [_edge("child.com", "seed.com")]
+        tree_str = render.render_tree("seed.com", edges, seed_roots=["seed.com"])
+        self.assertTrue(tree_str.endswith("\n"))
+        self.assertFalse(tree_str.endswith("\n\n"))
+
+    def test_depth_cap_propagated(self):
+        # Build 3-hop chain: seed -> hop1 -> hop2 -> hop3
+        e1 = _edge("hop1.com", "seed.com", hop=1)
+        e2 = _edge("hop2.com", "hop1.com", hop=2)
+        e3 = _edge("hop3.com", "hop2.com", hop=3)
+        edges = [e1, e2, e3]
+
+        # max_depth=1: hop1 is rendered, deeper hops (hop2, hop3) pruned
+        tree1 = render.render_tree("seed.com", edges, seed_roots=["seed.com"], max_depth=1)
+        self.assertIn("hop1.com", tree1)
+        self.assertNotIn("hop2.com", tree1)
+        self.assertNotIn("hop3.com", tree1)
+
 
 class TestFormats(unittest.TestCase):
     def setUp(self):
@@ -127,6 +146,27 @@ class TestFormats(unittest.TestCase):
                            {"yahoo.com", "aol.com"}, {})
         self.assertNotIn(payload, h)
         self.assertIn("&lt;/div&gt;", h)
+
+    def test_html_escapes_domain_with_script(self):
+        malicious_edges = [_edge("<script>alert('xss')</script>.com", "yahoo.com")]
+        h = render.to_html("Yahoo", "yahoo.com", malicious_edges,
+                           {"yahoo.com", "<script>alert('xss')</script>.com"}, {})
+        self.assertNotIn("<script>alert('xss')</script>", h)
+        self.assertIn("&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;.com", h)
+
+    def test_html_empty_name_falls_back_to_seed(self):
+        h = render.to_html("", "example.com", self.edges, {"example.com"}, {})
+        self.assertIn("<title>llunascope — example.com</title>", h)
+        self.assertIn("<h1><span class=\"moon\">\U0001f319</span> llunascope — example.com</h1>", h)
+
+    def test_render_json_missing_domain_key(self):
+        # Missing 'seed' or 'domain' key in dictionary
+        corrupt_dict = {"company": "Acme Corp", "nodes": ["acme.com"]}
+        output = render.render_json(data=corrupt_dict)
+        parsed = json.loads(output)
+        self.assertEqual(parsed["company"], "Acme Corp")
+        self.assertEqual(parsed["seed"], "")
+        self.assertEqual(parsed["tool"], "llunascope")
 
 
 if __name__ == "__main__":

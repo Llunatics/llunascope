@@ -13,6 +13,7 @@ Expansion is bounded: max 3 hops, visited-set, max 500 nodes. Loops impossible.
 
 from __future__ import annotations
 
+import concurrent.futures
 import ipaddress
 import re
 import shutil
@@ -103,7 +104,14 @@ def fetch_certs(domain: str, limit: int = MAX_CRTSH_RESULTS) -> list[CertInfo]:
             seen_sans.add(key)
             certs.append(ci)
 
-    for c in _crtsh_certs(domain, limit):
+    # Parallelize crt.sh and CertSpotter lookups
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f_crt = executor.submit(_crtsh_certs, domain, limit)
+        f_spot = executor.submit(_certspotter_certs, domain)
+        crt_data = f_crt.result()
+        spot_data = f_spot.result()
+
+    for c in crt_data:
         try:
             sans: set[str] = set()
             for line in str(c.get("name_value", "")).splitlines():
@@ -116,7 +124,7 @@ def fetch_certs(domain: str, limit: int = MAX_CRTSH_RESULTS) -> list[CertInfo]:
                              san_roots=sans))
         except Exception:
             continue
-    for c in _certspotter_certs(domain):
+    for c in spot_data:
         try:
             sans = {root_domain(n) for n in (c.get("dns_names") or [])}
             sans = {s for s in sans if s}
@@ -202,16 +210,30 @@ class AsnInfo:
     prefix_size_v4: int = 0
 
 
+_ip_asn_cache: dict[str, AsnInfo | None] = {}
+
+
+def clear_ip_cache() -> None:
+    """Clear in-memory IP to ASN cache."""
+    _ip_asn_cache.clear()
+
+
 def ip_to_asn(ip: str) -> AsnInfo | None:
+    """Resolve an IP address to ASN and prefix info via RIPE Stat (cached by IP)."""
+    if ip in _ip_asn_cache:
+        return _ip_asn_cache[ip]
     data = net.fetch_json(RIPE_NETINFO, params={"resource": ip}, timeout=20)
     if not isinstance(data, dict):
+        _ip_asn_cache[ip] = None
         return None
     asns = (data.get("data") or {}).get("asns") or []
     if not asns:
+        _ip_asn_cache[ip] = None
         return None
     try:
         asn = int(asns[0])
     except Exception:
+        _ip_asn_cache[ip] = None
         return None
     prefix, size = "", 0
     try:
@@ -229,7 +251,13 @@ def ip_to_asn(ip: str) -> AsnInfo | None:
                 size = n.num_addresses
     except Exception:
         pass
-    return AsnInfo(asn, prefix, size)
+    res = AsnInfo(asn, prefix, size)
+    _ip_asn_cache[ip] = res
+    return res
+
+
+# Alias for explicit RIPE lookup
+lookup_ripe = ip_to_asn
 
 
 _rdap_bootstrap: dict | None = None
@@ -298,9 +326,19 @@ def pivot(seed_domains: list[str], verbose_cb=None,
     hops below this depth. Default 1 = seed domains only.
     """
     result = PivotResult()
+    # Normalize and deduplicate seed domains; ignore empty/whitespace
+    clean_seeds = []
+    for s in (seed_domains or []):
+        if s and isinstance(s, str) and s.strip():
+            rd = root_domain(s.strip())
+            if rd and rd not in clean_seeds:
+                clean_seeds.append(rd)
+    if not clean_seeds:
+        return result
+
     visited: set[str] = set()
-    frontier: list[tuple[str, int, str]] = [(d, 0, "SEED") for d in seed_domains]
-    for d in seed_domains:
+    frontier: list[tuple[str, int, str]] = [(d, 0, "SEED") for d in clean_seeds]
+    for d in clean_seeds:
         result.nodes.add(d)
 
     asn_cache: dict[str, AsnInfo | None] = {}
@@ -327,112 +365,134 @@ def pivot(seed_domains: list[str], verbose_cb=None,
         visited.add(domain)
         note(f"[hop {hop}] pivoting {domain}")
 
-        note(f"  -> CT logs...")
-        certs = fetch_certs(domain, limit=500 if hop == 0 else 150)
-        note(f"  -> {len(certs)} certs")
-        if hop < org_tuple_hops:
-            note(f"  -> Subject.O enrichment...")
-            enrich_subject_o(certs)
-            note(f"  -> O= done")
+        # CT log queries & Subject.O enrichment (failure-isolated)
+        certs: list[CertInfo] = []
+        try:
+            note(f"  -> CT logs...")
+            certs = fetch_certs(domain, limit=500 if hop == 0 else 150)
+            note(f"  -> {len(certs)} certs")
+            if hop < org_tuple_hops:
+                note(f"  -> Subject.O enrichment...")
+                enrich_subject_o(certs)
+                note(f"  -> O= done")
 
-        # Record Subject.O identities for the org-tuple signal.
-        for cert in certs:
-            if cert.subject_o:
-                for rd in cert.san_roots:
-                    if rd not in result.org_identities:
-                        result.org_identities[rd] = cert.subject_o
+            # Record Subject.O identities for the org-tuple signal.
+            for cert in certs:
+                if cert.subject_o:
+                    for rd in sorted(cert.san_roots):
+                        if rd not in result.org_identities:
+                            result.org_identities[rd] = cert.subject_o
+        except Exception as exc:
+            note(f"  CT log error for {domain}: {exc}")
 
         # --- Signal 1: SAN overlap --------------------------------------
-        san_hits: dict[str, list[CertInfo]] = {}
-        for cert in certs:
-            for rd in cert.san_roots:
-                if rd != domain:
-                    san_hits.setdefault(rd, []).append(cert)
-        for rd, clist in san_hits.items():
-            shared = [c for c in clist if len(c.san_roots) <= SAN_CEILING]
-            polluted = [c for c in clist if len(c.san_roots) > SAN_CEILING]
-            if not shared:
-                continue  # only via shared CDN/WAF certs: too weak, skip
-            edge = _edge_for(result.edges, rd, domain) or Edge(rd, domain, hop + 1)
-            is_new = edge not in result.edges
-            if not any(e.signal == "san_overlap" for e in edge.evidences):
-                detail = f"{len(shared)} shared cert(s) also cover {rd}"
-                if shared[0].cert_id:
-                    detail += f" (e.g. serial {shared[0].cert_id[:12]}…)"
-                edge.add("san_overlap", detail)
-            if polluted and not any(e.signal == "__san_ceiling__"
-                                    for e in edge.evidences):
-                edge.evidences.append(Evidence(
-                    "__san_ceiling__",
-                    f"also shares a cert covering "
-                    f"{max(len(c.san_roots) for c in polluted)} roots (CDN/WAF)"))
-            edge.finalize()
-            if is_new:
-                result.edges.append(edge)
-            if rd not in visited and len(result.nodes) < MAX_NODES:
-                result.nodes.add(rd)
-                frontier.append((rd, hop + 1, domain))
+        try:
+            san_hits: dict[str, list[CertInfo]] = {}
+            for cert in certs:
+                for rd in sorted(cert.san_roots):
+                    if rd != domain:
+                        san_hits.setdefault(rd, []).append(cert)
+            for rd in sorted(san_hits.keys()):
+                clist = san_hits[rd]
+                shared = [c for c in clist if len(c.san_roots) <= SAN_CEILING]
+                polluted = [c for c in clist if len(c.san_roots) > SAN_CEILING]
+                if not shared:
+                    continue  # only via shared CDN/WAF certs: too weak, skip
+                edge = _edge_for(result.edges, rd, domain) or Edge(rd, domain, hop + 1)
+                is_new = edge not in result.edges
+                if not any(e.signal == "san_overlap" for e in edge.evidences):
+                    detail = f"{len(shared)} shared cert(s) also cover {rd}"
+                    if shared[0].cert_id:
+                        detail += f" (e.g. serial {shared[0].cert_id[:12]}…)"
+                    edge.add("san_overlap", detail)
+                if polluted and not any(e.signal == "__san_ceiling__"
+                                        for e in edge.evidences):
+                    edge.evidences.append(Evidence(
+                        "__san_ceiling__",
+                        f"also shares a cert covering "
+                        f"{max(len(c.san_roots) for c in polluted)} roots (CDN/WAF)"))
+                edge.finalize()
+                if is_new:
+                    result.edges.append(edge)
+                if rd not in visited and len(result.nodes) < MAX_NODES:
+                    result.nodes.add(rd)
+                    frontier.append((rd, hop + 1, domain))
+        except Exception as exc:
+            note(f"  SAN overlap error for {domain}: {exc}")
 
         # --- Signal 2: Org-Tuple (exact Subject.O across roots) ----------
-        o_here = result.org_identities.get(domain, "")
-        if o_here:
-            for other, o_other in result.org_identities.items():
-                if other == domain or o_other != o_here:
-                    continue
-                edge = _edge_for(result.edges, other, domain)
-                if edge is None:
-                    edge = Edge(other, domain, hop + 1)
-                    result.edges.append(edge)
-                if not any(e.signal == "org_tuple" for e in edge.evidences):
-                    edge.add("org_tuple", f"identical Subject.O='{o_here[:60]}' (OV/EV cert)")
-                    edge.finalize()
-
-        # --- Signal 3: ASN co-location (gated) ---------------------------
-        note(f"  -> ASN lookup...")
-        info = asn_of(domain)
-        note(f"  -> ASN: {info.asn if info else None}")
-        if info and info.asn not in IGNORED_ASNS:
-            pivotable = (info.prefix_size_v4 == 0
-                         or info.prefix_size_v4 <= MAX_PIVOT_PREFIX_V4)
-            if pivotable:
-                for other in list(result.nodes):
-                    if other == domain:
+        try:
+            o_here = result.org_identities.get(domain, "")
+            if o_here:
+                for other in sorted(result.org_identities.keys()):
+                    o_other = result.org_identities[other]
+                    if other == domain or o_other != o_here:
                         continue
-                    oinfo = asn_of(other)
-                    if oinfo and oinfo.asn == info.asn:
-                        edge = _edge_for(result.edges, other, domain)
-                        if edge is None:
-                            edge = Edge(other, domain, hop + 1)
-                            result.edges.append(edge)
-                        if not any(e.signal == "asn_match" for e in edge.evidences):
-                            edge.add("asn_match",
-                                     f"both resolve into AS{info.asn}"
-                                     + (f" ({info.prefix})" if info.prefix else ""))
-                            edge.finalize()
-
-        # --- Signal 4: RDAP org handle (weak) ----------------------------
-        note(f"  -> RDAP...")
-        if domain not in rdap_cache:
-            rdap_cache[domain] = rdap_org_handle(domain)
-        note(f"  -> RDAP done")
-        handle = rdap_cache[domain]
-        if handle:
-            for other in list(result.nodes):
-                if other == domain:
-                    continue
-                if other not in rdap_cache:
-                    rdap_cache[other] = rdap_org_handle(other)
-                if rdap_cache[other] == handle:
                     edge = _edge_for(result.edges, other, domain)
                     if edge is None:
                         edge = Edge(other, domain, hop + 1)
                         result.edges.append(edge)
-                    if not any(e.signal == "rdap_org" for e in edge.evidences):
-                        edge.add("rdap_org", f"shared RDAP handle '{handle[:40]}'")
+                    if not any(e.signal == "org_tuple" for e in edge.evidences):
+                        edge.add("org_tuple", f"identical Subject.O='{o_here[:60]}' (OV/EV cert)")
                         edge.finalize()
+        except Exception as exc:
+            note(f"  Org-Tuple error for {domain}: {exc}")
+
+        # --- Signal 3: ASN co-location (gated) ---------------------------
+        try:
+            note(f"  -> ASN lookup...")
+            info = asn_of(domain)
+            note(f"  -> ASN: {info.asn if info else None}")
+            if info and info.asn not in IGNORED_ASNS:
+                pivotable = (info.prefix_size_v4 == 0
+                             or info.prefix_size_v4 <= MAX_PIVOT_PREFIX_V4)
+                if pivotable:
+                    for other in sorted(result.nodes):
+                        if other == domain:
+                            continue
+                        oinfo = asn_of(other)
+                        if oinfo and oinfo.asn == info.asn:
+                            edge = _edge_for(result.edges, other, domain)
+                            if edge is None:
+                                edge = Edge(other, domain, hop + 1)
+                                result.edges.append(edge)
+                            if not any(e.signal == "asn_match" for e in edge.evidences):
+                                edge.add("asn_match",
+                                         f"both resolve into AS{info.asn}"
+                                         + (f" ({info.prefix})" if info.prefix else ""))
+                                edge.finalize()
+        except Exception as exc:
+            note(f"  ASN lookup error for {domain}: {exc}")
+
+        # --- Signal 4: RDAP org handle (weak) ----------------------------
+        try:
+            note(f"  -> RDAP...")
+            if domain not in rdap_cache:
+                rdap_cache[domain] = rdap_org_handle(domain)
+            note(f"  -> RDAP done")
+            handle = rdap_cache[domain]
+            if handle:
+                for other in sorted(result.nodes):
+                    if other == domain:
+                        continue
+                    if other not in rdap_cache:
+                        rdap_cache[other] = rdap_org_handle(other)
+                    if rdap_cache[other] == handle:
+                        edge = _edge_for(result.edges, other, domain)
+                        if edge is None:
+                            edge = Edge(other, domain, hop + 1)
+                            result.edges.append(edge)
+                        if not any(e.signal == "rdap_org" for e in edge.evidences):
+                            edge.add("rdap_org", f"shared RDAP handle '{handle[:40]}'")
+                            edge.finalize()
+        except Exception as exc:
+            note(f"  RDAP error for {domain}: {exc}")
 
     # Finalize any edges that never got finalized.
     for e in result.edges:
         if e.confidence == 0 and e.evidences:
             e.finalize()
+
+    # Deterministic sort for edges
+    result.edges.sort(key=lambda e: (-e.confidence, e.hop, e.via, e.target))
     return result

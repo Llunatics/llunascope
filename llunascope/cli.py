@@ -49,9 +49,12 @@ def _disambiguate(entities: list[dict], name: str, non_interactive: bool):
         if idx == 0:
             return None
         return entities[idx - 1]
-    except (ValueError, IndexError, EOFError, KeyboardInterrupt):
-        print("\n[llunascope] aborting.", file=sys.stderr)
+    except (ValueError, IndexError, EOFError):
+        print("\n[llunascope] aborting: invalid selection. Re-run and choose a valid index, or pass --seed directly.", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n[llunascope] aborted by user.", file=sys.stderr)
+        sys.exit(130)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,20 +66,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("company", nargs="?", help="Company name, e.g. \"Bank Mandiri\"")
     p.add_argument("--seed", default="",
-                   help="Comma-separated known root domains (escape hatch, skips name resolution)")
+                   help="Comma-separated known root domains (escape hatch, skips name resolution; default: none)")
     p.add_argument("--non-interactive", action="store_true",
                    help="Never prompt; auto-resolve ambiguity (for pipes/scripts)")
     p.add_argument("--roots-only", action="store_true",
                    help="Print only discovered root domains, one per line (pipe to subfinder)")
     p.add_argument("--format", choices=["tree", "mermaid", "dot", "json", "html"],
-                   default="tree", help="Output format (default: tree)")
+                   default="tree", help="Output format: tree, mermaid, dot, json, html (default: tree)")
     p.add_argument("--weights", action="store_true", help="Show scoring weights and exit")
-    p.add_argument("--verbose", action="store_true", help="Log pivot progress to stderr")
+    p.add_argument("-v", "--verbose", action="store_true", help="Log pivot progress to stderr")
+    p.add_argument("--no-truncate", action="store_true", help="Do not truncate registry hints/leads (default: show up to 10)")
     p.add_argument("--version", action="store_true", help="Show version and exit")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _run_main(argv)
+    except KeyboardInterrupt:
+        print("\n[llunascope] interrupted by user.", file=sys.stderr)
+        return 130
+
+
+def _run_main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.version:
@@ -96,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     if not net.check_online():
         print("[llunascope] no internet connection detected — llunascope queries "
               "public APIs (RIPE Stat, Wikidata, crt.sh) and needs connectivity. "
-              "It never contacts target infrastructure.", file=sys.stderr)
+              "It never contacts target infrastructure. Check your network connection "
+              "and retry with --verbose for details.", file=sys.stderr)
         return 3
 
     verbose = (lambda m: print(f"[llunascope] {m}", file=sys.stderr)) if args.verbose else None
@@ -110,13 +123,13 @@ def main(argv: list[str] | None = None) -> int:
         for s in seed_domains:
             host = s.split("//")[-1].split("/")[0].split("?")[0].split("#")[0]
             host = host.rsplit("@", 1)[-1]  # strip userinfo
-            host = host.split(":")[0]       # strip port (fuzz round 2:
-                                            # "…co.id:8080/x" jadi "co.id:8080")
+            host = host.split(":")[0]       # strip port
             rd = root_domain(host)
             if rd and rd not in seeds:
                 seeds.append(rd)
         if not seeds:
-            print("[llunascope] --seed contained no valid domains.",
+            print("[llunascope] --seed contained no valid domains. "
+                  "Provide valid root domains, e.g. --seed example.com,example.co.id.",
                   file=sys.stderr)
             return 2
         if verbose:
@@ -150,8 +163,12 @@ def main(argv: list[str] | None = None) -> int:
             # with --seed instead of silently discarding them.
             print("[llunascope] registry hints (leads — try --seed):",
                   file=sys.stderr)
-            for h in hints[:10]:
+            shown_hints = hints if args.no_truncate else hints[:10]
+            for h in shown_hints:
                 print(f"  · {h.value} — {h.evidence}", file=sys.stderr)
+            if not args.no_truncate and len(hints) > 10:
+                print(f"  ... (truncated, {len(hints) - 10} more leads; "
+                      f"use --no-truncate to show all)", file=sys.stderr)
         if not seeds:
             print(f"[llunascope] could not resolve {company!r} to any root domain.\n"
                   f"  Try: llunascope --seed example.com,example.co.id \"{company}\"\n"
@@ -181,18 +198,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     fmt = args.format
-    if fmt == "tree":
-        render.print_tree(seed_label, result.edges, seed_roots=seeds)
-    elif fmt == "mermaid":
-        print(render.to_mermaid(seed_label, result.edges))
-    elif fmt == "dot":
-        print(render.to_dot(seed_label, result.edges))
-    elif fmt == "json":
-        print(render.to_json(seed_label, company, result.edges,
-                             result.nodes, result.org_identities))
-    elif fmt == "html":
-        print(render.to_html(company, seed_label, result.edges,
-                             result.nodes, result.org_identities))
+    try:
+        if fmt == "tree":
+            render.print_tree(seed_label, result.edges, seed_roots=seeds)
+        elif fmt == "mermaid":
+            print(render.to_mermaid(seed_label, result.edges))
+        elif fmt == "dot":
+            print(render.to_dot(seed_label, result.edges))
+        elif fmt == "json":
+            print(render.to_json(seed_label, company, result.edges,
+                                 result.nodes, result.org_identities))
+        elif fmt == "html":
+            print(render.to_html(company, seed_label, result.edges,
+                                 result.nodes, result.org_identities))
+    except Exception as err:
+        print(f"[llunascope] failed to render {fmt} output: {err}. "
+              f"Retry with --format tree or check input data.", file=sys.stderr)
+        return 1
 
     if _is_tty() or args.verbose:
         print(f"\n[llunascope] {len(result.nodes)} root domains, "

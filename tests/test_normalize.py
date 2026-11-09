@@ -20,6 +20,10 @@ class TestNormalizeCompany(unittest.TestCase):
     def test_unicode_folded(self):
         self.assertEqual(normalize_company("Café Ségur"), "cafe segur")
 
+    def test_non_string_company(self):
+        self.assertEqual(normalize_company(None), "")
+        self.assertEqual(normalize_company(123), "")
+
 
 class TestNameSimilarity(unittest.TestCase):
     def test_identical(self):
@@ -64,6 +68,48 @@ class TestRootDomain(unittest.TestCase):
 
     def test_single_label(self):
         self.assertEqual(root_domain("localhost"), "")
+
+    def test_non_string_input(self):
+        self.assertEqual(root_domain(None), "")
+        self.assertEqual(root_domain(123), "")
+        self.assertEqual(root_domain([]), "")
+
+    def test_ports_validation(self):
+        # Valid numeric ports are stripped
+        self.assertEqual(root_domain("example.com:8080"), "example.com")
+        self.assertEqual(root_domain("www.example.co.id:443"), "example.co.id")
+        # Non-numeric or out-of-range ports are rejected
+        self.assertEqual(root_domain("example.com:abc"), "")
+        self.assertEqual(root_domain("example.com:99999"), "")
+        self.assertEqual(root_domain("example.com:0"), "")
+
+    def test_ipv6_and_bracket_handling(self):
+        self.assertEqual(root_domain("[::1]"), "")
+        self.assertEqual(root_domain("[2001:db8::1]"), "")
+        self.assertEqual(root_domain("[::1]:8080"), "")
+        self.assertEqual(root_domain("[::1"), "")
+        self.assertEqual(root_domain("::1]"), "")
+
+    def test_dns_label_and_domain_length(self):
+        # Empty label
+        self.assertEqual(root_domain("example..com"), "")
+        # Label > 63 chars
+        self.assertEqual(root_domain("a" * 64 + ".com"), "")
+        # Domain > 253 chars
+        long_domain = "a." * 128 + "com"
+        self.assertEqual(root_domain(long_domain), "")
+        # Hyphen at start/end of label
+        self.assertEqual(root_domain("-example.com"), "")
+        self.assertEqual(root_domain("example-.com"), "")
+
+    def test_idn_and_punycode(self):
+        # Unicode domain is preserved / decoded
+        self.assertEqual(root_domain("münchen.de"), "münchen.de")
+        # Punycode domain is decoded
+        self.assertEqual(root_domain("xn--mnchen-3ya.de"), "münchen.de")
+        # Malformed IDN / punycode is rejected
+        self.assertEqual(root_domain("xn--.de"), "")
+        self.assertEqual(root_domain("xn--$$$.de"), "")
 
 
 class TestIsSubdomainOf(unittest.TestCase):

@@ -91,8 +91,11 @@ def _wikidata_claims(qid: str) -> dict:
 
 def _domain_from_url(url: str) -> str:
     from urllib.parse import urlparse
+    if not isinstance(url, str):
+        return ""
     try:
-        return root_domain(urlparse(url).netloc or url)
+        parsed = urlparse(url)
+        return root_domain(parsed.netloc or parsed.path or url)
     except Exception:
         return ""
 
@@ -182,10 +185,11 @@ def resolve(name: str, seed_domains: list[str] | None = None
 
     if seed_domains:
         for d in seed_domains:
-            rd = root_domain(d.strip())
-            if rd:
-                domains.append(SeedCandidate("domain", rd, "seed-flag", 95.0,
-                                             "user-supplied --seed domain"))
+            if d and isinstance(d, str):
+                rd = root_domain(d.strip())
+                if rd and not any(c.value == rd for c in domains):
+                    domains.append(SeedCandidate("domain", rd, "seed-flag", 95.0,
+                                                 "user-supplied --seed domain"))
         return domains, others, entities
 
     wd_domains, wd_hints, entities = wikidata_seeds(name)

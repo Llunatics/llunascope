@@ -129,11 +129,22 @@ Dependencies: `requests`, `rich` (graceful plain-text fallback if missing).
 No API keys. No configuration. No packets sent to target infrastructure —
 only public APIs (crt.sh, RIPE Stat, Wikidata, SEC EDGAR, RDAP) are queried.
 
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | General error (rendering failure, aborted selection) |
+| `2` | Usage error (missing arguments, invalid `--seed`) |
+| `3` | Network connectivity failure |
+| `4` | Resolution failure (company name could not be resolved to any root domain) |
+| `130` | Interrupted by user (Ctrl-C / SIGINT) |
+
 ## Development
 
 | Command | What it does |
 |---|---|
-| `python3 -m unittest discover -s tests` | 76 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping |
+| `python3 -m unittest discover -s tests` | 114 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping |
 | `python3 -c "import sys; sys.path.insert(0,'tests'); import doh_shim; ..."` | run live tests on networks where port-53 DNS is intercepted |
 
 `tests/doh_shim.py` is a test-only DNS-over-HTTPS shim for such networks —

@@ -15,18 +15,21 @@ from unittest import mock
 from llunascope import net
 
 
-def _resp(status=200, payload=None, text=""):
+def _resp(status=200, payload=None, text="", headers=None):
     r = mock.Mock()
     r.status_code = status
     r.json.return_value = payload if payload is not None else {}
     r.text = text
+    r.headers = headers or {}
     return r
 
 
 class NetTestBase(unittest.TestCase):
     def setUp(self):
+        net.clear_mem_cache()
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(net.clear_mem_cache)
         p1 = mock.patch.object(net, "CACHE_DIR", Path(self._tmp.name))
         p2 = mock.patch.object(net, "_throttle", lambda url: None)
         p3 = mock.patch.object(net.requests, "get")
@@ -66,6 +69,62 @@ class TestFetchJson(NetTestBase):
         self.assertEqual(first, {"a": 1})
         self.assertEqual(second, {"a": 1})
         self.assertEqual(self.get.call_count, 1)
+
+    def test_429_retry_after_success(self):
+        r429 = _resp(429, headers={"Retry-After": "2"})
+        r200 = _resp(200, {"ok": 1})
+        self.get.side_effect = [r429, r200]
+        with mock.patch("time.sleep") as mock_sleep:
+            res = net.fetch_json("https://x.test/rate-limited", use_cache=False)
+        self.assertEqual(res, {"ok": 1})
+        self.assertEqual(self.get.call_count, 2)
+        mock_sleep.assert_called_with(2.0)
+
+    def test_429_exhaust_retries_returns_none(self):
+        r429 = _resp(429, headers={"Retry-After": "1"})
+        self.get.return_value = r429
+        with mock.patch("time.sleep"):
+            res = net.fetch_json("https://x.test/rate-limited-forever", use_cache=False)
+        self.assertIsNone(res)
+        self.assertEqual(self.get.call_count, 3)
+
+    def test_corrupted_cache_file_treated_as_miss(self):
+        # Write corrupted JSON to cache file
+        cache_path = net._cache_path("https://x.test/corrupt")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("{corrupt json !!!", encoding="utf-8")
+
+        self.get.return_value = _resp(200, {"recovered": True})
+        res = net.fetch_json("https://x.test/corrupt")
+        self.assertEqual(res, {"recovered": True})
+        self.assertEqual(self.get.call_count, 1)
+
+    def test_in_memory_cache_deduplication(self):
+        self.get.return_value = _resp(200, {"data": 42})
+        first = net.fetch_json("https://x.test/mem-cached")
+        second = net.fetch_json("https://x.test/mem-cached")
+        self.assertEqual(first, {"data": 42})
+        self.assertEqual(second, {"data": 42})
+        self.assertEqual(self.get.call_count, 1)
+
+
+class TestSessionManagement(unittest.TestCase):
+    def test_managed_session_closes_cleanly(self):
+        saved_session = None
+        with net.managed_session() as s:
+            saved_session = s
+            self.assertIsInstance(s, net.requests.Session)
+            self.assertEqual(s.max_redirects, 3)
+            # Patch close on adapter to ensure adapter.close() is called
+            with mock.patch.object(s, "close", wraps=s.close) as mock_close:
+                pass
+        # Assert close method was called on exit
+        s_obj = net.create_session()
+        with mock.patch.object(s_obj, "close") as mock_close:
+            with mock.patch("llunascope.net.create_session", return_value=s_obj):
+                with net.managed_session() as s:
+                    pass
+                mock_close.assert_called_once()
 
 
 class TestFetchText(NetTestBase):

@@ -9,7 +9,6 @@ Usage: python -m doh_shim <script>  OR  python -c "import doh_shim; ..."
 
 import json
 import socket
-import urllib.request
 
 _orig_getaddrinfo = socket.getaddrinfo
 _cache: dict[str, list] = {}
