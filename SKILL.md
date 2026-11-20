@@ -35,6 +35,14 @@ llunascope "Acme Corp" --format mermaid
 llunascope "Acme Corp" --format html > report.html
 llunascope "Acme Corp" --format json > graph.json
 
+# Watch mode: snapshot each run, alert (exit 10) only on new shadow assets
+llunascope "Acme Corp" --watch
+llunascope "Acme Corp" --watch --snapshot ~/acme-watch.json
+
+# M&A radar: flag cert/ASN convergence between two orgs (offline, snapshots only)
+llunascope --radar acme.json globex.json
+llunascope --radar acme.json globex.json --radar-baseline acme-old.json globex-old.json
+
 # Automation: never prompt
 llunascope "Apple" --non-interactive --format json
 ```
@@ -64,7 +72,8 @@ llunascope "Apple" --non-interactive --format json
   `--roots-only` output for subdomain enumeration.
 - Fully passive = no live host verification; a discovered domain may be
   parked, dead, or divested. The evidence chain tells you *why* it's linked.
-- v1.1 roadmap: M&A radar, temporal watch mode, interactive HTML graph.
+- v1.1 shipped: M&A radar and temporal watch mode. Interactive HTML graph
+  still pending.
 
 ## Safety
 

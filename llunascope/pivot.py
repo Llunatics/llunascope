@@ -281,6 +281,10 @@ class PivotResult:
     edges: list[Edge] = field(default_factory=list)
     nodes: set[str] = field(default_factory=set)
     org_identities: dict[str, str] = field(default_factory=dict)  # domain -> Subject.O
+    asn_by_node: dict[str, int] = field(default_factory=dict)  # domain -> ASN
+    # cert_id -> SAN root domains (crt.sh certs only; CertSpotter has no id).
+    # Powers watch snapshots and the M&A radar; best-effort, never fatal.
+    cert_map: dict[str, set[str]] = field(default_factory=dict)
 
 
 def _edge_for(edges: list[Edge], target: str, via: str) -> Edge | None:
@@ -334,6 +338,11 @@ def pivot(seed_domains: list[str], verbose_cb=None,
             note(f"  -> Subject.O enrichment...")
             enrich_subject_o(certs)
             note(f"  -> O= done")
+
+        # Record the cert registry for watch snapshots / M&A radar.
+        for cert in certs:
+            if cert.cert_id:
+                result.cert_map.setdefault(cert.cert_id, set()).update(cert.san_roots)
 
         # Record Subject.O identities for the org-tuple signal.
         for cert in certs:
@@ -391,6 +400,8 @@ def pivot(seed_domains: list[str], verbose_cb=None,
         note(f"  -> ASN lookup...")
         info = asn_of(domain)
         note(f"  -> ASN: {info.asn if info else None}")
+        if info:
+            result.asn_by_node[domain] = info.asn
         if info and info.asn not in IGNORED_ASNS:
             pivotable = (info.prefix_size_v4 == 0
                          or info.prefix_size_v4 <= MAX_PIVOT_PREFIX_V4)
@@ -399,6 +410,8 @@ def pivot(seed_domains: list[str], verbose_cb=None,
                     if other == domain:
                         continue
                     oinfo = asn_of(other)
+                    if oinfo:
+                        result.asn_by_node[other] = oinfo.asn
                     if oinfo and oinfo.asn == info.asn:
                         edge = _edge_for(result.edges, other, domain)
                         if edge is None:

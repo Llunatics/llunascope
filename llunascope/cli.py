@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+from pathlib import Path
 
-from . import net, seed as seedmod
+from . import net, seed as seedmod, watch as watchmod
 from .normalize import root_domain
 from .pivot import pivot
 from . import render
@@ -73,7 +74,59 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--weights", action="store_true", help="Show scoring weights and exit")
     p.add_argument("--verbose", action="store_true", help="Log pivot progress to stderr")
     p.add_argument("--version", action="store_true", help="Show version and exit")
+    p.add_argument("--watch", action="store_true",
+                   help="Watch mode: diff this run against the saved snapshot "
+                        "and alert on new shadow assets (exit 10 if any)")
+    p.add_argument("--snapshot", default="",
+                   help="Snapshot file for --watch (default: "
+                        "~/.cache/llunascope/<company>.json)")
+    p.add_argument("--state-dir", default="",
+                   help="Directory holding per-company snapshots for --watch")
+    p.add_argument("--radar", nargs=2, metavar=("SNAP-A", "SNAP-B"), default=None,
+                   help="M&A radar: compare two snapshots and flag cert/ASN "
+                        "convergence (exit 10 on new convergence)")
+    p.add_argument("--radar-baseline", nargs=2, metavar=("BASE-A", "BASE-B"),
+                   default=None,
+                   help="Baseline snapshots for --radar (only convergence "
+                        "new since the baseline is reported)")
     return p
+
+
+def _run_radar(args) -> int:
+    """Standalone radar run: two snapshots in, convergence report out."""
+    snaps = []
+    for path in args.radar:
+        try:
+            snap = watchmod.load_snapshot(path)
+        except watchmod.WatchError as exc:
+            print(f"[llunascope] {exc}", file=sys.stderr)
+            return 2
+        if snap is None:
+            print(f"[llunascope] radar: snapshot file not found: {path}",
+                  file=sys.stderr)
+            return 2
+        snaps.append(snap)
+    bases: list = [None, None]
+    if args.radar_baseline:
+        for i, path in enumerate(args.radar_baseline):
+            try:
+                base = watchmod.load_snapshot(path)
+            except watchmod.WatchError as exc:
+                print(f"[llunascope] {exc}", file=sys.stderr)
+                return 2
+            if base is None:
+                print(f"[llunascope] radar: baseline file not found: {path}",
+                      file=sys.stderr)
+                return 2
+            bases[i] = base
+    try:
+        result = watchmod.detect_convergence(snaps[0], snaps[1],
+                                             bases[0], bases[1])
+    except watchmod.WatchError as exc:
+        print(f"[llunascope] {exc}", file=sys.stderr)
+        return 2
+    print(watchmod.format_radar_report(result))
+    return watchmod.WATCH_EXIT_ALERT if result.converged else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,6 +139,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.weights:
         print(describe_weights())
         return 0
+    if args.radar_baseline and not args.radar:
+        print("[llunascope] --radar-baseline needs --radar.", file=sys.stderr)
+        return 2
+    if args.radar and args.watch:
+        print("[llunascope] --radar and --watch are separate modes; "
+              "use one at a time.", file=sys.stderr)
+        return 2
+    if (args.snapshot or args.state_dir) and not args.watch:
+        print("[llunascope] --snapshot/--state-dir need --watch.",
+              file=sys.stderr)
+        return 2
+    if args.radar:
+        return _run_radar(args)
     if not args.company and not args.seed:
         build_parser().print_help(sys.stderr)
         return 2
@@ -161,6 +227,23 @@ def main(argv: list[str] | None = None) -> int:
 
     seed_label = seeds[0] if len(seeds) == 1 else f"{len(seeds)} seeds"
 
+    # ---- Watch mode: load the previous snapshot before pivoting --------
+    # Fail fast on a corrupt snapshot or a company mismatch, before the
+    # (slow, networked) pivot runs. A missing file is a first run: the
+    # snapshot is created from this run and nothing is diffed.
+    watch_path = watch_old = watch_diff = None
+    if args.watch:
+        watch_path = (Path(args.snapshot) if args.snapshot
+                      else watchmod.default_snapshot_path(company,
+                                                          args.state_dir or None))
+        try:
+            watch_old = watchmod.load_snapshot(watch_path)
+            if watch_old is not None:
+                watchmod.check_snapshot_company(watch_old, company, watch_path)
+        except watchmod.WatchError as exc:
+            print(f"[llunascope] {exc}", file=sys.stderr)
+            return 2
+
     # ---- Pivot --------------------------------------------------------
     status = None
     if render.RICH and not args.roots_only and args.format == "tree" and _is_tty():
@@ -174,30 +257,60 @@ def main(argv: list[str] | None = None) -> int:
         if status:
             status.stop()
 
+    # ---- Watch mode: snapshot + diff (before output) -------------------
+    # Built right after the pivot so the diff is ready whatever the output
+    # format is; the file itself is saved after rendering (below), so a
+    # failed run never touches state.
+    new_snap = None
+    if args.watch:
+        new_snap = watchmod.snapshot_from_result(company, seeds, result)
+        if watch_old is not None:
+            watch_diff = watchmod.diff_snapshots(watch_old, new_snap)
+
     # ---- Output --------------------------------------------------------
     if args.roots_only:
         for n in sorted(result.nodes):
             print(n)
-        return 0
-
-    fmt = args.format
-    if fmt == "tree":
-        render.print_tree(seed_label, result.edges, seed_roots=seeds)
-    elif fmt == "mermaid":
-        print(render.to_mermaid(seed_label, result.edges))
-    elif fmt == "dot":
-        print(render.to_dot(seed_label, result.edges))
-    elif fmt == "json":
-        print(render.to_json(seed_label, company, result.edges,
-                             result.nodes, result.org_identities))
-    elif fmt == "html":
-        print(render.to_html(company, seed_label, result.edges,
-                             result.nodes, result.org_identities))
+    else:
+        fmt = args.format
+        if fmt == "tree":
+            render.print_tree(seed_label, result.edges, seed_roots=seeds)
+        elif fmt == "mermaid":
+            print(render.to_mermaid(seed_label, result.edges))
+        elif fmt == "dot":
+            print(render.to_dot(seed_label, result.edges))
+        elif fmt == "json":
+            print(render.to_json(seed_label, company, result.edges,
+                                 result.nodes, result.org_identities))
+        elif fmt == "html":
+            print(render.to_html(company, seed_label, result.edges,
+                                 result.nodes, result.org_identities))
 
     if _is_tty() or args.verbose:
         print(f"\n[llunascope] {len(result.nodes)} root domains, "
               f"{len(result.edges)} edges. Zero packets sent to targets.",
               file=sys.stderr)
+
+    # ---- Watch mode: save, report, exit code ---------------------------
+    # The snapshot is saved after the run, so a failed fetch never touches
+    # state (same rule as puny-patrol's watchdog). A save failure is still
+    # an error (exit 2): the next run would diff against a stale baseline.
+    if args.watch:
+        try:
+            watchmod.save_snapshot(watch_path, new_snap)
+        except watchmod.WatchError as exc:
+            print(f"[llunascope] {exc}", file=sys.stderr)
+            return 2
+        if watch_old is None:
+            print(f"[llunascope] watch: no previous snapshot — baseline "
+                  f"saved to {watch_path} ({len(new_snap['nodes'])} root "
+                  f"domains, {len(new_snap['edges'])} edges). Run again "
+                  f"to diff.", file=sys.stderr)
+            return 0
+        print(watchmod.format_watch_report(
+            watch_diff, watch_old.get("created_at"), watch_path),
+            file=sys.stderr)
+        return watchmod.WATCH_EXIT_ALERT if watch_diff.new_count else 0
     return 0
 
 

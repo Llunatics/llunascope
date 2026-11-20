@@ -83,6 +83,50 @@ llunascope "Acme" --format json > graph.json        # machine-readable
 llunascope --weights                                # show scoring weights
 ```
 
+### Watch mode — temporal diffing
+
+Run the same company on a schedule and get alerted only when something new
+appears. Each run saves a snapshot (`~/.cache/llunascope/<company>.json` by
+default); the next run diffs against it.
+
+```bash
+llunascope "Acme" --watch                  # first run: saves a baseline
+llunascope "Acme" --watch                  # later run: reports new assets
+llunascope "Acme" --watch --snapshot ~/acme-watch.json   # custom snapshot file
+llunascope "Acme" --watch --state-dir ~/llunascope-state # per-company files
+```
+
+Exit codes: **0** = no new shadow assets, **10** = new shadow asset(s) found,
+**2** = usage/state error (corrupt snapshot, wrong company, unwritable path).
+A failed run never touches the snapshot, so a transient outage can't swallow
+an alert. New root domains and new evidence on known domains are both
+reported; removed domains are listed for context but don't affect the exit
+code. Cron-friendly: `0 * * * * llunascope "Acme" --watch --non-interactive`.
+
+Snapshot format (JSON, `format_version` 1): company, seed domains, UTC
+timestamp, discovered root domains, evidence edges with confidence, Subject.O
+identities, per-domain ASNs, and a cert registry (cert id → SAN root domains,
+crt.sh certs only). Snapshots are per-company — a snapshot recorded for
+another company is refused rather than diffed.
+
+### M&A radar
+
+Compare two snapshots and flag infrastructure convergence — an acquisition
+signal. A TLS certificate whose SAN set spans both orgs' domains, or an ASN
+hosting domains from both orgs, counts as convergence. Only convergence that
+is new since the baseline is reported; without a baseline, everything shared
+is reported.
+
+```bash
+llunascope --radar acme.json globex.json
+llunascope --radar acme.json globex.json \
+    --radar-baseline acme-old.json globex-old.json
+```
+
+Exit codes: **0** = no new convergence, **10** = new convergence,
+**2** = usage/state error (missing or corrupt snapshot). Radar is fully
+offline — it only reads snapshot files.
+
 It **stops at root domains on purpose** — pipe `--roots-only` into
 `subfinder`/`amass` for subdomain enumeration. Unix philosophy.
 
@@ -133,16 +177,16 @@ only public APIs (crt.sh, RIPE Stat, Wikidata, SEC EDGAR, RDAP) are queried.
 
 | Command | What it does |
 |---|---|
-| `python3 -m unittest discover -s tests` | 76 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping |
+| `python3 -m unittest discover -s tests` | 125 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping, watch-mode snapshots/diffing, M&A radar |
 | `python3 -c "import sys; sys.path.insert(0,'tests'); import doh_shim; ..."` | run live tests on networks where port-53 DNS is intercepted |
 
 `tests/doh_shim.py` is a test-only DNS-over-HTTPS shim for such networks —
 not packaged, not needed on normal machines.
 
-## Roadmap (v1.1)
+## Roadmap (v1.1 — shipped)
 
-- **M&A radar** — flag when two orgs' certs/ASN suddenly converge (acquisition signal)
-- **Watch mode** — temporal diffing: alert on new shadow assets
+- **M&A radar** — flag when two orgs' certs/ASN suddenly converge (acquisition signal) ✅
+- **Watch mode** — temporal diffing: alert on new shadow assets ✅
 - **Interactive HTML graph** (Cytoscape.js) replacing the static Mermaid export
 
 ## License
