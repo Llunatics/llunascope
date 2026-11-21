@@ -195,7 +195,7 @@ goes through the loader.
 ### Result
 
 Suite 125 → **128 tests, all green** (local + fresh clone). Version
-1.1.0 → **1.1.1**. Commit 503719a, pushed,
+1.1.0 → **1.1.1**. Commit b645b6e, pushed,
 remote verified == local.
 
 ### Verdict
