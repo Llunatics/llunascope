@@ -127,3 +127,79 @@ limitations. It is a build record, not marketing.
   down before concluding a divestment.
 - **Interactive HTML graph** (Cytoscape.js) from the v1.1 roadmap is still
   pending; the static Mermaid export remains.
+
+---
+
+## Audit — Saturday 2026-11-21 (v1.1.0 → v1.1.1, deep round)
+
+Auditor: Lluna. Target: the v1.1.0 build of 2026-11-20 (Watch mode + M&A
+radar), the newest `built` entry with no audit yet. Baseline first:
+full suite green at the build commit (125/125).
+
+### Finding (1, real): hostile snapshot field types crashed watch/radar
+
+`load_snapshot` only checked the top level (`tool` + `nodes`/`edges` are
+lists). A hand-edited or third-party snapshot with valid JSON and the
+right top-level shape but hostile field types crashed with a bare
+traceback (exit 1) instead of the documented clean error (exit 2):
+
+- `certs` as a list / cert value an int or a string → `TypeError` in
+  `_shared_certs` (radar).
+- `asn_by_node` as a list → `AttributeError` (`.items()`); ASN value a
+  list/dict → `TypeError: unhashable` in `_shared_asns` (radar).
+- edge entry a string, `evidence` a string, or an evidence item a
+  string → `AttributeError` in `diff_snapshots` (watch diff after the
+  pivot — reachable from any saved snapshot, e.g. one edited by hand
+  or shared between operators).
+
+Verified live with 13 crafted snapshots through the real radar CLI
+and the diff functions: 7 distinct traceback paths before the fix,
+0 after.
+
+### Fix
+
+`llunascope/watch.py`: new `_check_shape()` called from `load_snapshot`
+— the single gate for every CLI path (watch load, radar load ×2,
+baseline load ×2). It deep-validates exactly the fields watch/radar
+consume: `nodes` (list of str), `edges` (list of dicts, str
+target/via, evidence list of dicts with str signal), `certs` (dict of
+str → list of str), `asn_by_node` (dict of str → int, bool excluded),
+`org_identities` (dict str → str), `company` (str), `seeds` (list of
+str). Anything malformed is now `WatchError` → clean message naming
+the field + exit 2. Unknown extra keys are still tolerated (forward
+compatibility for snapshot format v1). Direct `diff_snapshots` /
+`detect_convergence` callers still assume validated input — that is a
+documented library boundary, not a CLI path; every CLI entry point
+goes through the loader.
+
+### Regression tests (+3 methods, 13 subTests)
+
+- `test_load_hostile_field_types_raise_watch_error`: all 13 hostile
+  shapes → `WatchError`.
+- `test_load_tolerates_unknown_extra_keys`: forward-compat check.
+- `test_radar_hostile_field_types_rc2_no_traceback`: radar CLI → rc 2,
+  no `Traceback` in stderr, message names the bad field.
+
+### Verified clean (no change needed)
+
+- Snapshot-as-directory / `--state-dir` pointing at a file: clean
+  `WatchError` (exit 2) before any pivot.
+- Perf: 5.000-node / 5.000-edge snapshot builds in 0,01 s, diff in
+  0,04 s, radar in 0,01 s — no pathological blowup.
+- `default_snapshot_path` slugging: `normalize_company` strips all
+  non-alphanumerics first, so traversal (`../`, `/`, `..`) can never
+  reach the path; empty slug falls back to `seeded`.
+- Radar without a baseline reporting every shared cert/ASN as new is
+  by design (documented in the build record above), not a defect.
+
+### Result
+
+Suite 125 → **128 tests, all green** (local + fresh clone). Version
+1.1.0 → **1.1.1**. Commit 503719a, pushed,
+remote verified == local.
+
+### Verdict
+
+v1.1.1 solid. Watch mode and the M&A radar are safe against hostile
+snapshot files: the worst a malformed snapshot can do now is a clean
+error message, never a traceback mid-run.

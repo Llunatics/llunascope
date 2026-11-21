@@ -87,7 +87,7 @@ class TestSnapshotRoundTrip(unittest.TestCase):
         snap = _snap("Acme", ["acme.com"], [])
         self.assertEqual(snap["tool"], "llunascope")
         self.assertEqual(snap["format_version"], 1)
-        self.assertEqual(snap["version"], "1.1.0")
+        self.assertEqual(snap["version"], "1.1.1")
         self.assertEqual(snap["company"], "Acme")
         self.assertIn("created_at", snap)
         self.assertIn("certs", snap)
@@ -111,6 +111,51 @@ class TestSnapshotRoundTrip(unittest.TestCase):
                          encoding="utf-8")
             with self.assertRaises(watch.WatchError):
                 watch.load_snapshot(p)
+
+    def test_load_hostile_field_types_raise_watch_error(self):
+        # Audit Sat 2026-11-21: shape-valid JSON with hostile field types
+        # used to crash watch/radar with a bare traceback (exit 1).
+        # The loader is the single gate: all of these must be WatchError.
+        good = _snap("Acme", ["acme.com"], [])
+        hostile = {
+            "certs as list": {"certs": ["c1"]},
+            "cert value int": {"certs": {"c1": 5}},
+            "cert value string": {"certs": {"c1": "acme.com"}},
+            "asn_by_node as list": {"asn_by_node": ["x"]},
+            "asn value unhashable": {"asn_by_node": {"acme.com": [123]}},
+            "asn value bool": {"asn_by_node": {"acme.com": True}},
+            "node non-string": {"nodes": ["acme.com", 5]},
+            "edge non-dict": {"edges": ["not-a-dict"]},
+            "edge evidence string": {"edges": [{"target": "acme.com",
+                                                "via": "x",
+                                                "evidence": "SAN"}]},
+            "edge evidence item non-dict": {"edges": [{"target": "acme.com",
+                                                       "via": "x",
+                                                       "evidence": ["SAN"]}]},
+            "company non-string": {"company": 123},
+            "org_identities value non-string": {"org_identities": {"acme.com": 7}},
+            "seeds non-string": {"seeds": ["acme.com", 9]},
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for label, override in hostile.items():
+                snap = dict(good)
+                snap.update(override)
+                p = Path(d) / "hostile.json"
+                p.write_text(json.dumps(snap), encoding="utf-8")
+                with self.subTest(label=label):
+                    with self.assertRaises(watch.WatchError):
+                        watch.load_snapshot(p)
+
+    def test_load_tolerates_unknown_extra_keys(self):
+        # Forward compatibility: a newer snapshot with extra fields
+        # must still load.
+        snap = _snap("Acme", ["acme.com"], [])
+        snap["future_field"] = {"nested": [1, 2, 3]}
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "future.json"
+            p.write_text(json.dumps(snap), encoding="utf-8")
+            self.assertEqual(watch.load_snapshot(p)["future_field"],
+                             {"nested": [1, 2, 3]})
 
     def test_save_unwritable_raises_watch_error(self):
         # Parent path is a regular file, not a directory: mkdir must fail.
@@ -441,6 +486,30 @@ class TestRadarCli(unittest.TestCase):
             _write(pb, _snap("Globex", ["globex.com"], []))
             rc, _, err = self._run(["--radar", str(pa), str(pb)])
             self.assertEqual(rc, 2)
+
+    def test_radar_hostile_field_types_rc2_no_traceback(self):
+        # Audit Sat 2026-11-21: hostile-but-shape-valid snapshots crashed
+        # the radar with a traceback (rc 1). Now: clean rc 2, no traceback.
+        good_a = _snap("Acme", ["acme.com"], [])
+        good_b = _snap("Globex", ["globex.com"], [])
+        hostile = {
+            "certs as list": {"certs": ["c1"]},
+            "asn value unhashable": {"asn_by_node": {"acme.com": [123]}},
+            "cert value int": {"certs": {"c1": 5}},
+        }
+        with tempfile.TemporaryDirectory() as d:
+            pb = Path(d) / "b.json"
+            _write(pb, good_b)
+            for label, override in hostile.items():
+                snap = dict(good_a)
+                snap.update(override)
+                pa = Path(d) / "a.json"
+                pa.write_text(json.dumps(snap), encoding="utf-8")
+                with self.subTest(label=label):
+                    rc, _, err = self._run(["--radar", str(pa), str(pb)])
+                    self.assertEqual(rc, 2)
+                    self.assertNotIn("Traceback", err)
+                    self.assertIn("invalid shape", err)
 
     def test_radar_baseline_without_radar_rc2(self):
         rc, _, err = self._run(

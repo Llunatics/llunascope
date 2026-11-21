@@ -116,10 +116,67 @@ def save_snapshot(path, snap: dict) -> None:
         raise WatchError(f"cannot save snapshot {path}: {exc}") from exc
 
 
+def _check_shape(path, snap: dict) -> None:
+    """Deep-validate the fields watch/radar actually consume.
+
+    The top-level check in load_snapshot only proves nodes/edges are
+    lists. A hand-edited snapshot with the right top-level shape but
+    hostile field types (``certs`` as a list, an ASN that is a dict, an
+    edge that is a string) used to crash the radar/diff with a bare
+    traceback (exit 1). Every consumer below assumes these types, so the
+    loader is the single gate: anything malformed is a clean WatchError
+    (exit 2). Unknown extra keys are tolerated for forward compatibility.
+    """
+    def bad(why: str) -> WatchError:
+        return WatchError(f"snapshot {path} has invalid shape: {why}")
+
+    nodes = snap.get("nodes")
+    if not isinstance(nodes, list) or not all(
+            isinstance(n, str) for n in nodes):
+        raise bad("'nodes' must be a list of strings")
+    for e in snap.get("edges", []):
+        if not isinstance(e, dict):
+            raise bad("each 'edges' entry must be an object")
+        if not isinstance(e.get("target", ""), str) or not isinstance(
+                e.get("via", ""), str):
+            raise bad("edge 'target'/'via' must be strings")
+        ev = e.get("evidence", [])
+        if not isinstance(ev, list) or not all(
+                isinstance(x, dict) and isinstance(x.get("signal", ""), str)
+                for x in ev):
+            raise bad("edge 'evidence' must be a list of objects "
+                      "with a string 'signal'")
+    certs = snap.get("certs", {})
+    if not isinstance(certs, dict) or not all(
+            isinstance(k, str) and isinstance(v, list) and all(
+                isinstance(r, str) for r in v)
+            for k, v in certs.items()):
+        raise bad("'certs' must map cert ids to lists of root domains")
+    asns = snap.get("asn_by_node", {})
+    if not isinstance(asns, dict) or not all(
+            isinstance(k, str) and isinstance(v, int)
+            and not isinstance(v, bool)
+            for k, v in asns.items()):
+        raise bad("'asn_by_node' must map domains to integer ASNs")
+    orgs = snap.get("org_identities", {})
+    if not isinstance(orgs, dict) or not all(
+            isinstance(k, str) and isinstance(v, str)
+            for k, v in orgs.items()):
+        raise bad("'org_identities' must map domains to strings")
+    if not isinstance(snap.get("company", ""), str):
+        raise bad("'company' must be a string")
+    seeds = snap.get("seeds", [])
+    if not isinstance(seeds, list) or not all(
+            isinstance(s, str) for s in seeds):
+        raise bad("'seeds' must be a list of strings")
+
+
 def load_snapshot(path):
     """Load a snapshot, or None if the file does not exist (first run).
 
-    Raises WatchError on unreadable files, invalid JSON, or wrong shape.
+    Raises WatchError on unreadable files, invalid JSON, or wrong shape
+    (including hostile field types inside an otherwise valid-looking
+    snapshot — see _check_shape).
     """
     path = Path(path)
     try:
@@ -136,6 +193,7 @@ def load_snapshot(path):
             or not isinstance(snap.get("nodes"), list)
             or not isinstance(snap.get("edges"), list)):
         raise WatchError(f"snapshot {path} is not a llunascope snapshot")
+    _check_shape(path, snap)
     return snap
 
 
