@@ -272,7 +272,7 @@ newline in one is an injection, not whitespace to preserve.
 ### Result
 
 Suite 128 → **133 tests, all green** (local + fresh clone, see below).
-Version 1.1.0 → **1.1.2**. Commit TBD, pushed, remote verified ==
+Version 1.1.0 → **1.1.2**. Commit 312d8dd, pushed, remote verified ==
 local.
 
 ### Verdict
