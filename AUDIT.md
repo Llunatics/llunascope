@@ -203,3 +203,80 @@ remote verified == local.
 v1.1.1 solid. Watch mode and the M&A radar are safe against hostile
 snapshot files: the worst a malformed snapshot can do now is a clean
 error message, never a traceback mid-run.
+
+---
+
+## Audit — Sunday 2026-11-22 (v1.1.1 → v1.1.2, deepening round)
+
+Auditor: Lluna. Target: llunascope v1.1.1 — Saturday's verdict was already
+final, so this round is extra deepening (new adversarial/perf cases), per
+the audit scheme. Baseline first: fresh clone of remote 9532ce4 →
+128/128 green.
+
+### Findings (4, all real)
+
+All four are the same class Saturday fixed (hostile snapshot content
+reaching a report), but in fields Saturday's checks did not cover:
+
+1. **Watch report printed `created_at` raw.** `format_watch_report`
+   interpolated the loaded snapshot's `created_at` into the "since ..."
+   clause without `_term_safe`. A hand-edited snapshot with
+   `created_at: "2026-01-01\n\x1b[31mFAKE ALERT"` forged a fake line in
+   stderr. `_check_shape` did not validate `created_at` at all.
+2. **Watch report printed evidence signal names raw.** The `sigs` join
+   in `format_watch_report` skipped `_term_safe` (target/via were
+   already stripped). A hostile signal string injected newlines/ANSI
+   escapes into the report.
+3. **Radar report printed the cert id raw.** `format_radar_report`
+   interpolated `c.cert_id` without `_term_safe` (roots/domains were
+   already stripped). Same injection via a hand-edited snapshot.
+4. **Radar on one company vs itself reported "NEW convergence".**
+   Two snapshots of the same company — or the same file passed twice —
+   share every cert/ASN by construction, so `detect_convergence`
+   returned `converged=True` (exit 10): a false M&A signal from an
+   operator typo. No guard existed.
+
+Root cause of 1–3: `_term_safe` itself had a gap — its regex
+`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]` deliberately spared `\t`, `\n` and
+`\r`, so even a stripped value could still forge a fake log line with
+a bare newline. The sanitizer's job is single-line field values; a
+newline in one is an injection, not whitespace to preserve.
+
+### Fixes
+
+- `llunascope/render.py`: `_term_safe` now strips **all** C0 controls
+  (`[\x00-\x1f\x7f]`), newline/CR/tab included, with an updated
+  docstring. This closes the class everywhere at once (tree, watch,
+  radar) — no call site can reintroduce it.
+- `llunascope/watch.py`: `_term_safe` applied to `created_at` in the
+  `since` clause, to evidence signal names, and to the cert id in the
+  radar report; `_check_shape` now rejects a non-string `created_at`
+  (missing stays tolerated); `detect_convergence` refuses two
+  snapshots whose normalized companies are equal and non-empty
+  (`WatchError` → clean exit 2, message names the company). Unknown
+  companies (empty after normalization) still pass through.
+- `tests/test_watch.py`: +5 test methods — created_at/signal/cert-id
+  stripping (unit level), non-string `created_at` rejected at load,
+  same-company radar raises, same-company/same-file radar CLI rc 2
+  without traceback.
+
+### Verified clean (no change needed)
+
+- **Very long company name (400 chars):** watch fails clean, rc 2, no
+  traceback — the over-long snapshot path errors at load before any
+  pivot runs.
+- **Perf at 100k nodes / 100k edges:** snapshot 0,42 s, save 1,24 s,
+  load 0,35 s, diff 0,56 s, radar 0,02 s — no pathological blowup
+  beyond Saturday's 5k-node figures.
+
+### Result
+
+Suite 128 → **133 tests, all green** (local + fresh clone, see below).
+Version 1.1.0 → **1.1.2**. Commit TBD, pushed, remote verified ==
+local.
+
+### Verdict
+
+v1.1.2 solid. The terminal-injection class is now closed at the
+sanitizer itself rather than field by field, and the radar can no
+longer cry "acquisition" at an org compared against itself.

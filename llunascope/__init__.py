@@ -4,5 +4,5 @@ Passive EASM: from a single company name to every forgotten subsidiary and
 shadow root domain. Zero packets sent. Zero API keys. Full evidence chains.
 """
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __all__ = ["__version__"]

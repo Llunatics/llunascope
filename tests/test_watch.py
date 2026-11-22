@@ -87,7 +87,7 @@ class TestSnapshotRoundTrip(unittest.TestCase):
         snap = _snap("Acme", ["acme.com"], [])
         self.assertEqual(snap["tool"], "llunascope")
         self.assertEqual(snap["format_version"], 1)
-        self.assertEqual(snap["version"], "1.1.1")
+        self.assertEqual(snap["version"], "1.1.2")
         self.assertEqual(snap["company"], "Acme")
         self.assertIn("created_at", snap)
         self.assertIn("certs", snap)
@@ -145,6 +145,28 @@ class TestSnapshotRoundTrip(unittest.TestCase):
                 with self.subTest(label=label):
                     with self.assertRaises(watch.WatchError):
                         watch.load_snapshot(p)
+
+    def test_load_rejects_non_string_created_at(self):
+        # Audit Sun 2026-11-22: created_at was not shape-checked, so a
+        # hostile string reached the watch report's "since ..." clause
+        # unescaped; a non-string rendered as repr noise.
+        good = _snap("Acme", ["acme.com"], [])
+        with tempfile.TemporaryDirectory() as d:
+            for label, bad in {"int": 123, "dict": {"x": 1},
+                               "list": ["2026-01-01"]}.items():
+                snap = dict(good)
+                snap["created_at"] = bad
+                p = Path(d) / "hostile.json"
+                p.write_text(json.dumps(snap), encoding="utf-8")
+                with self.subTest(label=label):
+                    with self.assertRaises(watch.WatchError):
+                        watch.load_snapshot(p)
+            # Missing created_at stays tolerated (forward compat).
+            snap = dict(good)
+            del snap["created_at"]
+            p = Path(d) / "nocreated.json"
+            p.write_text(json.dumps(snap), encoding="utf-8")
+            self.assertIsNotNone(watch.load_snapshot(p))
 
     def test_load_tolerates_unknown_extra_keys(self):
         # Forward compatibility: a newer snapshot with extra fields
@@ -237,6 +259,29 @@ class TestDiff(unittest.TestCase):
         self.assertNotIn("\x07", report)
         self.assertIn("evil.example", report)
 
+    def test_report_strips_control_chars_from_created_at_and_signals(self):
+        # Audit Sun 2026-11-22: the "since <created_at>" clause and the
+        # evidence signal names were printed raw — a hand-edited snapshot
+        # could inject newlines/ANSI escapes into the watch report.
+        # _term_safe strips the controls; the printable leftovers
+        # ("[31mFAKE-ALERT") are inert text on the same line, they can
+        # no longer forge a line of their own.
+        hostile_ts = "2026-11-20T00:00:00+00:00\n\x1b[31mFAKE-ALERT\x1b[0m"
+        d = watch.WatchDiff(new_nodes=["new.example"])
+        report = watch.format_watch_report(d, hostile_ts, "/tmp/acme.json")
+        self.assertNotIn("\x1b", report)
+        self.assertNotIn("\nFAKE-ALERT", report)
+        self.assertIn("new.example", report)
+        evil_edge = {"target": "known.example", "via": "acme.com",
+                     "evidence": [{"signal": "san_overlap\n\x1b[31mEVIL",
+                                   "detail": "x", "weight": 30}]}
+        d2 = watch.WatchDiff(new_edges=[evil_edge])
+        report2 = watch.format_watch_report(
+            d2, "2026-11-20T00:00:00+00:00", "/tmp/acme.json")
+        self.assertNotIn("\x1b", report2)
+        self.assertNotIn("\nEVIL", report2)
+        self.assertIn("san_overlap", report2)
+
     def test_quiet_report(self):
         report = watch.format_watch_report(watch.WatchDiff(),
                                            "2026-11-20T00:00:00+00:00",
@@ -315,6 +360,36 @@ class TestRadar(unittest.TestCase):
         a["company"] = "Acme\x1b[31m"
         res = watch.detect_convergence(a, b)
         self.assertNotIn("\x1b", watch.format_radar_report(res))
+
+    def test_radar_report_strips_control_chars_from_cert_id(self):
+        # Audit Sun 2026-11-22: the shared cert id was printed raw — a
+        # hand-edited snapshot could inject escapes into the radar report.
+        a, b = self._pair()
+        evil_id = "999\n\x1b[31mEVIL-CERT"
+        a["certs"][evil_id] = ["acme.com", "globex.com"]
+        b["certs"][evil_id] = ["acme.com", "globex.com"]
+        res = watch.detect_convergence(a, b)
+        report = watch.format_radar_report(res)
+        self.assertNotIn("\x1b", report)
+        self.assertNotIn("\nEVIL-CERT", report)
+        self.assertIn("999", report)
+
+    def test_same_company_radar_raises(self):
+        # Audit Sun 2026-11-22: two snapshots of the same company share
+        # every cert/ASN by construction, so radar reported "NEW
+        # convergence" (exit 10) — a false M&A signal from an operator
+        # typo or the same file passed twice.
+        a, b = self._pair()
+        b["company"] = "Acme Inc"  # normalizes to the same company
+        b["certs"]["999"] = ["acme.com", "globex.com"]
+        a["certs"]["999"] = ["acme.com", "globex.com"]
+        with self.assertRaises(watch.WatchError):
+            watch.detect_convergence(a, b)
+        # Unknown companies (empty after normalization) still pass.
+        c, d = self._pair()
+        c.pop("company")
+        d.pop("company")
+        self.assertIsNotNone(watch.detect_convergence(c, d))
 
 
 class TestWatchCli(unittest.TestCase):
@@ -510,6 +585,25 @@ class TestRadarCli(unittest.TestCase):
                     self.assertEqual(rc, 2)
                     self.assertNotIn("Traceback", err)
                     self.assertIn("invalid shape", err)
+
+    def test_radar_same_company_rc2(self):
+        # Audit Sun 2026-11-22: radar on two snapshots of one company
+        # (or the same file twice) used to report NEW convergence (rc 10).
+        a = _snap("Acme", ["acme.com"], [],
+                  certs={"999": {"acme.com", "acme.net"}})
+        b = _snap("Acme", ["acme.com"], [],
+                  certs={"999": {"acme.com", "acme.net"}})
+        with tempfile.TemporaryDirectory() as d:
+            pa, pb = Path(d) / "a.json", Path(d) / "b.json"
+            _write(pa, a)
+            _write(pb, b)
+            rc, _, err = self._run(["--radar", str(pa), str(pb)])
+            self.assertEqual(rc, 2)
+            self.assertNotIn("Traceback", err)
+            self.assertIn("different companies", err)
+            rc, _, err = self._run(["--radar", str(pa), str(pa)])
+            self.assertEqual(rc, 2)
+            self.assertNotIn("Traceback", err)
 
     def test_radar_baseline_without_radar_rc2(self):
         rc, _, err = self._run(

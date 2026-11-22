@@ -28,12 +28,15 @@ def _children_map(edges: list[Edge]) -> dict[str, list[Edge]]:
     return m
 
 
-_TERM_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_TERM_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _term_safe(s) -> str:
     """Strip control chars so data from public APIs (RDAP org names, cert
-    subjects) can't inject terminal escapes into the tree output."""
+    subjects) or hand-edited snapshots can't inject terminal escapes into
+    the tree output. All C0 controls are stripped, including newline and
+    carriage return: a ``\\n`` inside a field value would forge fake log
+    lines just as surely as an ESC sequence forges colours."""
     return _TERM_UNSAFE.sub("", s if isinstance(s, str) else str(s))
 
 

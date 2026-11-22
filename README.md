@@ -177,7 +177,7 @@ only public APIs (crt.sh, RIPE Stat, Wikidata, SEC EDGAR, RDAP) are queried.
 
 | Command | What it does |
 |---|---|
-| `python3 -m unittest discover -s tests` | 128 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping, watch-mode snapshots/diffing, M&A radar |
+| `python3 -m unittest discover -s tests` | 133 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping, watch-mode snapshots/diffing, M&A radar |
 | `python3 -c "import sys; sys.path.insert(0,'tests'); import doh_shim; ..."` | run live tests on networks where port-53 DNS is intercepted |
 
 `tests/doh_shim.py` is a test-only DNS-over-HTTPS shim for such networks —

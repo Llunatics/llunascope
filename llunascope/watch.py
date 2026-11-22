@@ -165,6 +165,11 @@ def _check_shape(path, snap: dict) -> None:
         raise bad("'org_identities' must map domains to strings")
     if not isinstance(snap.get("company", ""), str):
         raise bad("'company' must be a string")
+    if "created_at" in snap and not isinstance(snap["created_at"], str):
+        # format_watch_report prints it raw in the "since ..." clause;
+        # a non-string here used to render as repr noise, a hostile
+        # string as a terminal-injection vector (audit Sun 2026-11-22).
+        raise bad("'created_at' must be a string")
     seeds = snap.get("seeds", [])
     if not isinstance(seeds, list) or not all(
             isinstance(s, str) for s in seeds):
@@ -262,7 +267,10 @@ def diff_snapshots(old: dict, new: dict) -> WatchDiff:
 def format_watch_report(diff: WatchDiff, old_created_at: str | None,
                         snap_path) -> str:
     """Human-readable watch diff for stderr."""
-    since = f" since {old_created_at}" if old_created_at else ""
+    # created_at comes from the loaded snapshot, not from our own clock:
+    # strip controls exactly like every other snapshot-sourced string.
+    since = (f" since {_term_safe(old_created_at)}"
+             if old_created_at else "")
     if not diff.new_count and not diff.removed_nodes and not diff.removed_edges:
         return (f"[llunascope] watch: no new shadow assets{since} "
                 f"(snapshot {snap_path}).")
@@ -273,7 +281,8 @@ def format_watch_report(diff: WatchDiff, old_created_at: str | None,
     for e in diff.new_edges:
         if e.get("target") in diff.new_nodes:
             continue  # already listed as a new domain
-        sigs = ", ".join(x.get("signal", "?") for x in e.get("evidence", []))
+        sigs = ", ".join(_term_safe(x.get("signal", "?"))
+                         for x in e.get("evidence", []))
         lines.append(f"  + new evidence: {_term_safe(e.get('target', ''))} "
                      f"via {_term_safe(e.get('via', ''))} [{sigs}]")
     for n in diff.removed_nodes:
@@ -356,6 +365,17 @@ def detect_convergence(snap_a: dict, snap_b: dict,
     if (base_a is None) != (base_b is None):
         raise WatchError("radar baseline needs both snapshots "
                          "(--radar-baseline A-old B-old)")
+    # Radar compares two *different* orgs. Two snapshots of the same
+    # company (or the same file twice) share every cert/ASN by
+    # construction, so without this guard they report "NEW convergence"
+    # (exit 10) — a false M&A signal from an operator typo. Unknown
+    # companies (empty after normalization) are still allowed through.
+    comp_a = normalize_company(str(snap_a.get("company", "")))
+    comp_b = normalize_company(str(snap_b.get("company", "")))
+    if comp_a and comp_b and comp_a == comp_b:
+        raise WatchError(
+            "radar compares two different companies — both snapshots "
+            f"belong to {_term_safe(str(snap_a.get('company', '?')))!r}")
     shared_certs = _shared_certs(snap_a, snap_b)
     shared_asns = _shared_asns(snap_a, snap_b)
     if base_a is not None and base_b is not None:
@@ -396,7 +416,7 @@ def format_radar_report(res: RadarResult) -> str:
         return "\n".join(lines)
     lines.append("  NEW convergence:")
     for c in res.new_shared_certs:
-        lines.append(f"    cert {c.cert_id}: "
+        lines.append(f"    cert {_term_safe(c.cert_id)}: "
                      f"{', '.join(_term_safe(r) for r in c.roots_a)} "
                      f"({a}) <-> "
                      f"{', '.join(_term_safe(r) for r in c.roots_b)} ({b})")
