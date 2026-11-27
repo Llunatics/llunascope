@@ -87,7 +87,7 @@ class TestSnapshotRoundTrip(unittest.TestCase):
         snap = _snap("Acme", ["acme.com"], [])
         self.assertEqual(snap["tool"], "llunascope")
         self.assertEqual(snap["format_version"], 1)
-        self.assertEqual(snap["version"], "1.1.2")
+        self.assertEqual(snap["version"], "1.2.0")
         self.assertEqual(snap["company"], "Acme")
         self.assertIn("created_at", snap)
         self.assertIn("certs", snap)

@@ -72,8 +72,9 @@ llunascope "Apple" --non-interactive --format json
   `--roots-only` output for subdomain enumeration.
 - Fully passive = no live host verification; a discovered domain may be
   parked, dead, or divested. The evidence chain tells you *why* it's linked.
-- v1.1 shipped: M&A radar and temporal watch mode. Interactive HTML graph
-  still pending.
+- v1.1 shipped: M&A radar and temporal watch mode. v1.2 shipped: interactive
+  HTML graph (Cytoscape.js) — drag/zoom/click evidence, layout switcher,
+  confidence filter, domain search.
 
 ## Safety
 

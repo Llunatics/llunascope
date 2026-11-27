@@ -199,41 +199,292 @@ def to_json(seed_label: str, company: str, edges: list[Edge],
     }, indent=2, ensure_ascii=False)
 
 
+def _graph_payload(company: str, seed_label: str, edges: list[Edge],
+                   nodes: set[str]) -> dict:
+    """Cytoscape.js element set for the interactive HTML graph.
+
+    Seed domains are the nodes no edge points at; hop-1 edges hang off a
+    single SEED meta-node (the pivot records their parent as 'SEED', never
+    a specific seed domain — same convention as the mermaid export).
+    """
+    targets = {e.target for e in edges}
+    seed_domains = sorted(n for n in nodes if n not in targets)
+    max_conf: dict[str, float] = {}
+    hop_of: dict[str, int] = {}
+    for e in edges:
+        max_conf[e.target] = max(max_conf.get(e.target, 0.0), e.confidence)
+        hop_of[e.target] = min(hop_of.get(e.target, e.hop), e.hop)
+    elements: list[dict] = [{
+        "data": {"id": "SEED", "label": f"\U0001f319 {seed_label}",
+                 "kind": "seed", "seed_domains": seed_domains},
+    }]
+    # Seed domains are NOT separate nodes: they have no graded edges (the
+    # pivot records hop-1 parents as 'SEED'), so standalone seed nodes would
+    # dangle unconnected and vanish under the confidence filter. The SEED
+    # meta-node represents them; its details panel lists them.
+    for n in sorted(nodes):
+        if n in seed_domains:
+            continue
+        elements.append({"data": {"id": n, "label": n, "kind": "domain",
+                                  "hop": hop_of.get(n, 0),
+                                  "confidence": max_conf.get(n, 0.0)}})
+    for i, e in enumerate(sorted(edges, key=lambda x: -x.confidence)):
+        elements.append({"data": {
+            "id": f"e{i}", "source": e.via, "target": e.target,
+            "confidence": e.confidence, "hop": e.hop,
+            "penalized": e.penalized,
+            "evidence": [{"signal": x.signal, "detail": x.detail,
+                          "weight": x.weight}
+                         for x in e.evidences
+                         if not x.signal.startswith("__")],
+        }})
+    return {"company": company, "seed_label": seed_label,
+            "seed_domains": seed_domains, "elements": elements}
+
+
+def _safe_json_for_script(payload: dict) -> str:
+    """Serialize a payload for a <script type=\"application/json\"> block.
+
+    The only breakout from such a block is a literal `</script` (or an
+    HTML comment opener in exotic parsers), so every `<`, `>` and `&` is
+    Unicode-escaped — JSON.parse decodes them back exactly. A hostile
+    company/seed string can never close the block or inject markup.
+    """
+    raw = json.dumps(payload, ensure_ascii=False)
+    return (raw.replace("&", "\\u0026").replace("<", "\\u003c")
+               .replace(">", "\\u003e"))
+
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llunascope — {company_html}</title>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<title>llunascope — %%COMPANY_HTML%%</title>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
 <style>
-  body {{ background:#0d1117; color:#c9d1d9; font-family:system-ui,sans-serif; margin:0; padding:2rem; }}
-  h1 {{ color:#e6edf3; }} h1 .moon {{ color:#a371f7; }}
-  .tag {{ color:#8b949e; font-style:italic; margin-top:-0.8rem; }}
-  .mermaid {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; }}
-  table {{ border-collapse:collapse; width:100%; margin-top:1.5rem; }}
-  th,td {{ border:1px solid #30363d; padding:0.5rem 0.7rem; text-align:left; font-size:0.9rem; }}
-  th {{ background:#161b22; color:#e6edf3; }}
-  .conf {{ font-weight:bold; color:#7ee787; }}
-  .foot {{ color:#8b949e; font-size:0.8rem; margin-top:2rem; }}
-  code {{ background:#161b22; padding:0.15rem 0.4rem; border-radius:4px; }}
+  body { background:#0d1117; color:#c9d1d9; font-family:system-ui,sans-serif; margin:0; padding:2rem; }
+  h1 { color:#e6edf3; } h1 .moon { color:#a371f7; }
+  .tag { color:#8b949e; font-style:italic; margin-top:-0.8rem; }
+  #cy-wrap { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; }
+  #cy { height:560px; width:100%; background:#0d1117; border:1px solid #30363d; border-radius:6px; }
+  #toolbar { display:flex; flex-wrap:wrap; gap:0.8rem 1.2rem; align-items:center; margin-bottom:0.8rem; font-size:0.9rem; }
+  #toolbar label { color:#8b949e; }
+  #toolbar select, #toolbar input[type="text"] { background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:0.3rem 0.5rem; }
+  #toolbar button { background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:0.3rem 0.8rem; cursor:pointer; }
+  #toolbar button:hover { background:#30363d; }
+  #counts { color:#8b949e; }
+  #details { background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:0.8rem 1rem; margin-top:0.8rem; font-size:0.9rem; min-height:2.6rem; }
+  #details h3 { margin:0 0 0.4rem; color:#e6edf3; font-size:1rem; }
+  #details .muted { color:#8b949e; }
+  #details ul { margin:0.3rem 0 0; padding-left:1.2rem; }
+  #cy-fallback { display:none; color:#f85149; margin-top:0.8rem; }
+  .legend { color:#8b949e; font-size:0.85rem; margin-top:0.6rem; }
+  .legend b { font-weight:600; }
+  .legend .hi { color:#3fb950; } .legend .mid { color:#d29922; } .legend .lo { color:#f85149; } .legend .seed { color:#a371f7; }
+  table { border-collapse:collapse; width:100%; margin-top:1.5rem; }
+  th,td { border:1px solid #30363d; padding:0.5rem 0.7rem; text-align:left; font-size:0.9rem; }
+  th { background:#161b22; color:#e6edf3; }
+  .conf { font-weight:bold; color:#7ee787; }
+  .foot { color:#8b949e; font-size:0.8rem; margin-top:2rem; }
+  code { background:#161b22; padding:0.15rem 0.4rem; border-radius:4px; }
 </style></head><body>
-<h1><span class="moon">\U0001f319</span> llunascope — {company_html}</h1>
+<h1><span class="moon">\U0001f319</span> llunascope — %%COMPANY_HTML%%</h1>
 <p class="tag">The moon never knocks. It just watches. — zero packets sent, zero API keys.</p>
-<div class="mermaid">
-{mermaid}
+<div id="cy-wrap">
+  <div id="toolbar">
+    <label>Layout
+      <select id="layout-select">
+        <option value="cose" selected>Force-directed (cose)</option>
+        <option value="breadthfirst">Tree (breadthfirst)</option>
+        <option value="concentric">Concentric</option>
+        <option value="grid">Grid</option>
+      </select>
+    </label>
+    <label>Min confidence
+      <input id="conf-slider" type="range" min="0" max="99" value="0" step="1">
+      <span id="conf-value">0%</span>
+    </label>
+    <label>Find domain
+      <input id="search" type="text" placeholder="aol.com" size="18">
+    </label>
+    <button id="fit-btn" type="button">Fit</button>
+    <button id="reset-btn" type="button">Reset view</button>
+    <span id="counts"></span>
+  </div>
+  <div id="cy"></div>
+  <p id="cy-fallback">Cytoscape.js failed to load (CDN unreachable?) — the graph is
+  unavailable, but the evidence table below still lists every edge.</p>
+  <div id="details"><span class="muted">Click a node or an edge to inspect its evidence chain.</span></div>
+  <p class="legend"><b class="seed">◆ seed</b> &nbsp;·&nbsp; edge colour by confidence:
+  <b class="hi">≥70% strong</b>, <b class="mid">40–69% moderate</b>,
+  <b class="lo">&lt;40% weak</b> &nbsp;·&nbsp; drag to move, scroll to zoom, click to inspect.</p>
 </div>
+<script type="application/json" id="llunascope-graph">%%GRAPH_JSON%%</script>
+<script>
+(function () {
+  var fallback = document.getElementById('cy-fallback');
+  if (typeof cytoscape === 'undefined') { fallback.style.display = 'block'; return; }
+  var payload = JSON.parse(document.getElementById('llunascope-graph').textContent);
+  var details = document.getElementById('details');
+  var counts = document.getElementById('counts');
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function band(conf) { return conf >= 70 ? 'hi' : (conf >= 40 ? 'mid' : 'lo'); }
+  function evList(evs) {
+    if (!evs || !evs.length) return '<p class="muted">No evidence recorded.</p>';
+    var items = evs.map(function (e) {
+      return '<li><code>' + esc(e.signal) + '</code> ' + esc(e.detail) + '</li>';
+    }).join('');
+    return '<ul>' + items + '</ul>';
+  }
+  var cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: payload.elements,
+    style: [
+      { selector: 'node', style: {
+          'label': 'data(label)', 'font-size': 11, 'color': '#e6edf3',
+          'text-valign': 'center', 'text-halign': 'center',
+          'background-color': '#58a6ff', 'width': 26, 'height': 26,
+          'text-outline-color': '#0d1117', 'text-outline-width': 2 } },
+      { selector: 'node[kind="seed"]', style: {
+          'background-color': '#a371f7', 'shape': 'star',
+          'width': 40, 'height': 40, 'font-size': 13, 'font-weight': 'bold' } },
+      { selector: 'node.conf-hi', style: { 'background-color': '#3fb950' } },
+      { selector: 'node.conf-mid', style: { 'background-color': '#d29922' } },
+      { selector: 'node.conf-lo', style: { 'background-color': '#f85149' } },
+      { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#e6edf3' } },
+      { selector: 'node.highlight', style: { 'border-width': 4, 'border-color': '#f0f6fc' } },
+      { selector: 'edge', style: {
+          'label': 'data(confidence)', 'font-size': 10, 'color': '#8b949e',
+          'text-background-color': '#0d1117', 'text-background-opacity': 1,
+          'text-background-padding': 2, 'curve-style': 'bezier',
+          'target-arrow-shape': 'triangle', 'width': 2, 'line-color': '#8b949e',
+          'target-arrow-color': '#8b949e' } },
+      { selector: 'edge.conf-hi', style: { 'line-color': '#3fb950', 'target-arrow-color': '#3fb950', 'width': 4 } },
+      { selector: 'edge.conf-mid', style: { 'line-color': '#d29922', 'target-arrow-color': '#d29922', 'width': 3 } },
+      { selector: 'edge.conf-lo', style: { 'line-color': '#f85149', 'target-arrow-color': '#f85149', 'width': 2 } },
+      { selector: 'edge:selected', style: { 'line-color': '#e6edf3', 'target-arrow-color': '#e6edf3', 'width': 5 } }
+    ],
+    layout: { name: 'cose', animate: true, randomize: false },
+    wheelSensitivity: 0.3
+  });
+  cy.edges().forEach(function (e) { e.addClass('conf-' + band(e.data('confidence'))); });
+  cy.nodes('[kind="domain"]').forEach(function (n) { n.addClass('conf-' + band(n.data('confidence'))); });
+  function updateCounts() {
+    var visEdges = cy.edges(':visible').length;
+    // Domain nodes only — the SEED meta-node is not a root domain, so it
+    // is excluded to keep this count consistent with the report footer.
+    var visNodes = cy.nodes('[kind="domain"]:visible').length;
+    counts.textContent = visNodes + ' nodes · ' + visEdges + ' edges shown';
+  }
+  function showNode(node) {
+    var d = node.data();
+    var html = '<h3>' + esc(d.label) + '</h3>';
+    if (d.kind === 'seed') {
+      html += '<p>Seed root' + (d.seed_domains && d.seed_domains.length > 1 ? 's' : '') + ': '
+        + d.seed_domains.map(esc).join(', ') + '</p>';
+    } else {
+      html += '<p>Hop ' + d.hop + ' · strongest edge confidence '
+        + d.confidence + '%</p>';
+    }
+    var outs = node.outgoers('edge');
+    if (outs.length) {
+      html += '<p>Outgoing edges:</p><ul>' + outs.map(function (e) {
+        return '<li>' + esc(e.data('target')) + ' — ' + e.data('confidence')
+          + '% (' + e.data('evidence').map(function (x) { return esc(x.signal); }).join(' + ') + ')</li>';
+      }).join('') + '</ul>';
+    }
+    var ins = node.incomers('edge');
+    if (ins.length) {
+      html += '<p>Incoming edge' + (ins.length > 1 ? 's' : '') + ':</p>' + ins.map(function (e) {
+        return '<p><b>' + esc(e.data('source')) + ' → ' + esc(e.data('target'))
+          + '</b> — ' + e.data('confidence') + '%'
+          + (e.data('penalized') ? ' (shared-cert penalty ×0.2 applied)' : '')
+          + evList(e.data('evidence')) + '</p>';
+      }).join('');
+    }
+    details.innerHTML = html;
+  }
+  function showEdge(edge) {
+    var d = edge.data();
+    details.innerHTML = '<h3>' + esc(d.source) + ' → ' + esc(d.target) + '</h3>'
+      + '<p>Confidence <b>' + d.confidence + '%</b> · hop ' + d.hop
+      + (d.penalized ? ' · shared-cert penalty ×0.2 applied' : '') + '</p>'
+      + evList(d.evidence);
+  }
+  cy.on('tap', 'node', function (evt) { showNode(evt.target); });
+  cy.on('tap', 'edge', function (evt) { showEdge(evt.target); });
+  cy.on('tap', function (evt) { if (evt.target === cy) {
+    details.innerHTML = '<span class="muted">Click a node or an edge to inspect its evidence chain.</span>';
+  } });
+  document.getElementById('layout-select').addEventListener('change', function (evt) {
+    var name = evt.target.value;
+    var opts = { name: name, animate: true };
+    if (name === 'breadthfirst') opts.directed = true;
+    if (name === 'concentric') opts.minNodeSpacing = 40;
+    cy.layout(opts).run();
+  });
+  var slider = document.getElementById('conf-slider');
+  slider.addEventListener('input', function () {
+    var min = Number(slider.value);
+    document.getElementById('conf-value').textContent = min + '%';
+    cy.edges().forEach(function (e) {
+      if (e.data('confidence') < min) { e.hide(); } else { e.show(); }
+    });
+    cy.nodes().forEach(function (n) {
+      if (n.data('kind') === 'seed') { n.show(); return; }
+      var connected = n.connectedEdges(':visible');
+      if (connected.length) { n.show(); } else { n.hide(); }
+    });
+    updateCounts();
+  });
+  document.getElementById('search').addEventListener('change', function (evt) {
+    var q = evt.target.value.trim().toLowerCase();
+    cy.nodes().removeClass('highlight');
+    if (!q) return;
+    var match = cy.nodes().filter(function (n) {
+      return n.data('label').toLowerCase().indexOf(q) !== -1;
+    });
+    if (match.length) {
+      match.addClass('highlight');
+      cy.animate({ center: { eles: match.first() } }, { duration: 300 });
+      showNode(match.first());
+    }
+  });
+  document.getElementById('fit-btn').addEventListener('click', function () { cy.fit(); });
+  document.getElementById('reset-btn').addEventListener('click', function () {
+    slider.value = 0;
+    document.getElementById('conf-value').textContent = '0%';
+    document.getElementById('search').value = '';
+    cy.elements().show();
+    cy.nodes().removeClass('highlight');
+    cy.layout({ name: 'cose', animate: true, randomize: false }).run();
+    updateCounts();
+  });
+  updateCounts();
+})();
+</script>
 <h2>Evidence chains</h2>
 <table><tr><th>Target</th><th>Via</th><th>Confidence</th><th>Evidence</th></tr>
-{rows}
+%%ROWS%%
 </table>
-<p class="foot">Generated by <code>llunascope</code> · passive EASM · {n_nodes} root domains, {n_edges} edges.
-Signals: san_overlap, org_tuple, asn_match, rdap_org. Weights published in README.</p>
-<script>mermaid.initialize({{startOnLoad:true, theme:'dark'}});</script>
+<p class="foot">Generated by <code>llunascope</code> · passive EASM · %%N_NODES%% root domains, %%N_EDGES%% edges.
+Signals: san_overlap, org_tuple, asn_match, rdap_org. Weights published in README.
+Graph: <a href="https://js.cytoscape.org/" style="color:#8b949e">Cytoscape.js</a> (CDN); graph data is embedded in this file.</p>
 </body></html>
 """
 
 
 def to_html(company: str, seed_label: str, edges: list[Edge], nodes: set[str],
             org_identities: dict) -> str:
+    """Interactive HTML report: Cytoscape.js graph + evidence table.
+
+    The graph data rides in a <script type="application/json"> block,
+    Unicode-escaped so hostile strings cannot break out of it. The
+    evidence table below the graph is unchanged (printable, works even
+    when the CDN is unreachable).
+    """
     rows = []
     for e in sorted(edges, key=lambda x: -x.confidence):
         evs = "<br>".join(
@@ -243,10 +494,11 @@ def to_html(company: str, seed_label: str, edges: list[Edge], nodes: set[str],
             f"<tr><td><code>{html.escape(e.target)}</code></td>"
             f"<td><code>{html.escape(e.via)}</code></td>"
             f"<td class='conf'>{e.confidence:g}%</td><td>{evs}</td></tr>")
-    return HTML_TEMPLATE.format(
-        company=company, company_html=html.escape(company),
-        # The mermaid source is embedded raw in the HTML body: escape it so a
-        # hostile company/seed string cannot break out of the <div> (mermaid
-        # reads the div's text content, so entities decode back harmlessly).
-        mermaid=html.escape(to_mermaid(seed_label, edges)),
-        rows="\n".join(rows), n_nodes=len(nodes), n_edges=len(edges))
+    graph_json = _safe_json_for_script(
+        _graph_payload(company, seed_label, edges, nodes))
+    return (HTML_TEMPLATE
+            .replace("%%COMPANY_HTML%%", html.escape(company))
+            .replace("%%GRAPH_JSON%%", graph_json)
+            .replace("%%ROWS%%", "\n".join(rows))
+            .replace("%%N_NODES%%", str(len(nodes)))
+            .replace("%%N_EDGES%%", str(len(edges))))

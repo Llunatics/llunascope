@@ -117,16 +117,110 @@ class TestFormats(unittest.TestCase):
                            self.edges, {"yahoo.com", "aol.com"}, {})
         self.assertNotIn("<script>alert(1)</script>", h)
         self.assertIn("&lt;script&gt;", h)
-        self.assertIn("mermaid", h)
+        self.assertIn("cytoscape", h)
 
-    def test_html_escapes_mermaid_block(self):
-        # The mermaid source is embedded in the HTML body: a hostile company
-        # name must not break out of the <div class="mermaid">.
-        payload = '</div><script>alert(1)</script><div class="'
+    def test_html_escapes_json_block(self):
+        # The graph data rides in a <script type="application/json"> block:
+        # a hostile company name must not break out of it. Every '<' in
+        # the JSON is Unicode-escaped, so no literal '</script' survives.
+        payload = '</script><script>alert(1)</script>'
         h = render.to_html(payload, payload, self.edges,
                            {"yahoo.com", "aol.com"}, {})
         self.assertNotIn(payload, h)
-        self.assertIn("&lt;/div&gt;", h)
+        # Exactly three real script tags: the Cytoscape CDN include, the
+        # JSON data block, and the inline controller. A fourth would mean
+        # the payload broke out.
+        self.assertEqual(h.count("<script"), 3)
+        self.assertEqual(h.count("</script>"), 3)
+        self.assertIn("&lt;/script&gt;", h)
+
+    def test_html_has_no_mermaid(self):
+        # v1.2.0: the static Mermaid embed is replaced by Cytoscape.js.
+        h = render.to_html("Yahoo", "yahoo.com", self.edges,
+                           {"yahoo.com", "aol.com"}, {})
+        self.assertNotIn("mermaid", h.lower())
+        self.assertIn("cytoscape", h)
+
+
+class TestHtmlGraph(unittest.TestCase):
+    """Interactive Cytoscape.js graph embedded in --format html."""
+
+    def setUp(self):
+        self.edges = [
+            _edge("aol.com", "SEED", hop=1, signals=("san_overlap",)),
+            _edge("cs.com", "aol.com", hop=2,
+                  signals=("san_overlap", "asn_match")),
+        ]
+        self.nodes = {"yahoo.com", "aol.com", "cs.com"}
+        self.html = render.to_html("Yahoo", "yahoo.com", self.edges,
+                                   self.nodes, {})
+
+    def _payload(self):
+        """Parse the embedded graph JSON out of the HTML."""
+        marker = '<script type="application/json" id="llunascope-graph">'
+        start = self.html.index(marker) + len(marker)
+        end = self.html.index("</script>", start)
+        return json.loads(self.html[start:end])
+
+    def test_graph_json_parses(self):
+        data = self._payload()
+        self.assertEqual(data["company"], "Yahoo")
+        self.assertEqual(data["seed_domains"], ["yahoo.com"])
+        # SEED meta-node + 2 discovered domains + 2 edges (the seed domain
+        # itself is not a graph node — the SEED node represents it).
+        self.assertEqual(len(data["elements"]), 1 + 2 + 2)
+
+    def test_seed_node_and_hop1_edges(self):
+        data = self._payload()
+        by_id = {e["data"]["id"]: e["data"] for e in data["elements"]}
+        by_target = {e["data"]["target"]: e["data"] for e in data["elements"]
+                     if "target" in e["data"]}
+        self.assertEqual(by_id["SEED"]["kind"], "seed")
+        self.assertEqual(by_id["aol.com"]["kind"], "domain")
+        self.assertEqual(by_id["aol.com"]["hop"], 1)
+        self.assertEqual(by_id["cs.com"]["hop"], 2)
+        self.assertEqual(by_target["aol.com"]["source"], "SEED")
+        self.assertEqual(by_target["cs.com"]["source"], "aol.com")
+
+    def test_edge_carries_confidence_and_evidence(self):
+        data = self._payload()
+        by_id = {e["data"]["id"]: e["data"] for e in data["elements"]}
+        by_target = {e["data"]["target"]: e["data"] for e in data["elements"]
+                     if "target" in e["data"]}
+        # cs.com edge: san_overlap(40) + asn_match(25) = 65.
+        self.assertEqual(by_target["cs.com"]["confidence"], 65)
+        signals = [x["signal"] for x in by_target["cs.com"]["evidence"]]
+        self.assertEqual(signals, ["san_overlap", "asn_match"])
+        # Node confidence = strongest incoming edge.
+        self.assertEqual(by_id["cs.com"]["confidence"], 65)
+        self.assertEqual(by_id["aol.com"]["confidence"], 40)
+
+    def test_controls_present(self):
+        for token in ("layout-select", "conf-slider", "search",
+                      "fit-btn", "reset-btn", "details", "id=\"cy\""):
+            self.assertIn(token, self.html)
+
+    def test_hostile_labels_cannot_break_json_block(self):
+        evil = 'x</script><script>alert(1)</script>'
+        h = render.to_html(evil, evil, self.edges, self.nodes, {})
+        self.assertNotIn(evil, h)
+        self.assertEqual(h.count("<script"), 3)
+        # The escaped payload still decodes back to the original string.
+        marker = '<script type="application/json" id="llunascope-graph">'
+        start = h.index(marker) + len(marker)
+        end = h.index("</script>", start)
+        data = json.loads(h[start:end])
+        self.assertEqual(data["company"], evil)
+
+    def test_empty_graph_still_valid(self):
+        h = render.to_html("Acme", "acme.com", [], {"acme.com"}, {})
+        marker = '<script type="application/json" id="llunascope-graph">'
+        start = h.index(marker) + len(marker)
+        end = h.index("</script>", start)
+        data = json.loads(h[start:end])
+        self.assertEqual(data["seed_domains"], ["acme.com"])
+        self.assertEqual(len(data["elements"]), 1)  # SEED meta-node only
+        self.assertIn("Cytoscape.js failed to load", h)
 
 
 if __name__ == "__main__":

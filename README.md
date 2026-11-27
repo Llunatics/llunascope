@@ -78,10 +78,23 @@ llunascope "Bank Mandiri"                          # name in, tree out
 llunascope --seed acme.com,acme.co.id "Acme"        # skip name resolution
 llunascope "Acme" --roots-only --non-interactive | subfinder -silent
 llunascope "Acme" --format mermaid                  # renders natively on GitHub
-llunascope "Acme" --format html > report.html       # standalone report
+llunascope "Acme" --format html > report.html       # interactive graph (drag, zoom, click for evidence)
 llunascope "Acme" --format json > graph.json        # machine-readable
 llunascope --weights                                # show scoring weights
 ```
+
+### Interactive graph — `--format html`
+
+The HTML report is an interactive Cytoscape.js graph, not a static picture:
+drag nodes, scroll to zoom, and click any node or edge to inspect its
+evidence chain and confidence in the details panel. Toolbar: layout switcher
+(force-directed / tree / concentric / grid), a minimum-confidence slider that
+hides weak edges (and the nodes they orphan), a domain search box, and
+Fit/Reset view. Edge colour tracks confidence (green ≥70%, amber 40–69%,
+red <40%); seed roots get a purple star node. The evidence table from the
+old report is still below the graph, so the file stays useful when the
+Cytoscape.js CDN is unreachable. `--format mermaid` is unchanged for
+GitHub-native rendering.
 
 ### Watch mode — temporal diffing
 
@@ -177,7 +190,7 @@ only public APIs (crt.sh, RIPE Stat, Wikidata, SEC EDGAR, RDAP) are queried.
 
 | Command | What it does |
 |---|---|
-| `python3 -m unittest discover -s tests` | 133 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping, watch-mode snapshots/diffing, M&A radar |
+| `python3 -m unittest discover -s tests` | 140 offline unit tests: scoring math, name/domain normalization, seed resolution, pivot-engine signal logic (network mocked), CLI plumbing, all output formats incl. injection-escaping and the interactive HTML graph payload, watch-mode snapshots/diffing, M&A radar |
 | `python3 -c "import sys; sys.path.insert(0,'tests'); import doh_shim; ..."` | run live tests on networks where port-53 DNS is intercepted |
 
 `tests/doh_shim.py` is a test-only DNS-over-HTTPS shim for such networks —
@@ -187,7 +200,7 @@ not packaged, not needed on normal machines.
 
 - **M&A radar** — flag when two orgs' certs/ASN suddenly converge (acquisition signal) ✅
 - **Watch mode** — temporal diffing: alert on new shadow assets ✅
-- **Interactive HTML graph** (Cytoscape.js) replacing the static Mermaid export
+- **Interactive HTML graph** (Cytoscape.js) replacing the static Mermaid export ✅ (v1.2.0)
 
 ## License
 

@@ -280,3 +280,69 @@ local.
 v1.1.2 solid. The terminal-injection class is now closed at the
 sanitizer itself rather than field by field, and the radar can no
 longer cry "acquisition" at an org compared against itself.
+
+## Build — Friday 2026-11-27 (v1.1.2 → v1.2.0, interactive HTML graph)
+
+Last pending item on the v1.1 roadmap: the static Mermaid embed in
+`--format html` is replaced by an interactive Cytoscape.js graph.
+`--format mermaid` itself is untouched (it renders natively on GitHub).
+
+### What changed
+
+- `llunascope/render.py`: new `_graph_payload()` (Cytoscape element set:
+  one SEED meta-node, one node per discovered domain, one edge per graded
+  edge with confidence + full evidence chain) and
+  `_safe_json_for_script()` (Unicode-escapes `<`, `>`, `&` so a hostile
+  company/seed string can never close the JSON script block). `to_html()`
+  now renders the Cytoscape graph with a toolbar — layout switcher
+  (cose / breadthfirst / concentric / grid), minimum-confidence slider
+  (hides weak edges and the nodes they orphan), domain search (highlight
+  + centre + details), Fit/Reset — plus a click-to-inspect details panel
+  (node: hop, strongest confidence, in/out edges; edge: confidence,
+  signals, shared-cert penalty note). Edge colour tracks confidence
+  (green ≥70%, amber 40–69%, red <40%); seed roots get a purple star node.
+  The evidence table below the graph is unchanged, so the report stays
+  usable when the Cytoscape.js CDN (jsdelivr, 3.30.4) is unreachable — a
+  fallback message says so.
+- Version bump 1.1.2 → 1.2.0 (`llunascope/__init__.py`, `pyproject.toml`).
+- README: new "Interactive graph" section, usage line, roadmap item
+  marked done, test count 133 → 140. SKILL.md: pending note → shipped.
+
+### Design decisions
+
+- Seed domains are **not** separate graph nodes: they carry no graded
+  edges (hop-1 parents are recorded as 'SEED'), so standalone seed nodes
+  would dangle unconnected and vanish under the confidence filter. The
+  SEED meta-node represents them; its details panel lists the seed
+  domains. Same convention as the mermaid export.
+- The toolbar's node count counts domain nodes only, so it stays
+  consistent with the report footer's root-domain count.
+- Graph data rides in a `<script type="application/json">` block, parsed
+  with `JSON.parse` — no string interpolation into JS, no `innerHTML`
+  from data (the details panel builds HTML only from escaped strings).
+
+### Tests
+
+- `tests/test_render.py`: +7 test methods — payload parses with correct
+  seed/edge/node structure, confidence + evidence carried, all toolbar
+  controls present, hostile labels cannot break the JSON block (script-tag
+  count stays 3, payload still decodes back exactly), empty graph renders
+  a valid SEED-only payload, no "mermaid" remains in HTML output.
+- Controller smoke test (Node, fake cytoscape + fake DOM — the real
+  library needs a browser): layout switch, confidence slider hides the
+  15% edge and orphans its node, search highlights + centres + shows
+  details, node/edge taps render the right evidence, reset restores all.
+  All pass. Inline controller also passes `node --check`.
+- Suite 133 → **140 tests, all green**.
+
+### Result
+
+Version 1.1.2 → **1.2.0**.
+
+### Verdict
+
+v1.2.0 solid. The last roadmap item is done; the report is now an
+exploration tool instead of a static picture, with the evidence table as
+the offline fallback. The one thing not verified here is rendering in a
+real browser (headless check only) — the Cytoscape.js API usage follows
+its documented element/style/event surface.
