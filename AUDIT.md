@@ -420,7 +420,10 @@ Suite 140 → **143 tests, all green** (local + fresh GitHub clone):
 +3 in `tests/test_render.py` — pivot-shaped edges rewrite hop-1
 sources to SEED with no dangling endpoint; template tokens round-trip
 verbatim in company + evidence + title; the inline controller passes
-`node --check` (guards the new try/catch syntax).
+`node --check` (guards the new try/catch syntax). Follow-up fix in
+the same round: `test_snapshot_format_fields` hardcoded `"1.2.0"`
+and broke on the version bump — now pinned to the live
+`__version__`, so future bumps can't fail the suite.
 
 ### Result
 
