@@ -84,10 +84,13 @@ class TestSnapshotRoundTrip(unittest.TestCase):
         self.assertEqual(s1, s2)
 
     def test_snapshot_format_fields(self):
+        from llunascope import __version__
         snap = _snap("Acme", ["acme.com"], [])
         self.assertEqual(snap["tool"], "llunascope")
         self.assertEqual(snap["format_version"], 1)
-        self.assertEqual(snap["version"], "1.2.0")
+        # Pinned to the live package version, not a literal: a version
+        # bump used to break this test (1.2.0 -> 1.2.1, audit 28 Nov 2026).
+        self.assertEqual(snap["version"], __version__)
         self.assertEqual(snap["company"], "Acme")
         self.assertIn("created_at", snap)
         self.assertIn("certs", snap)
