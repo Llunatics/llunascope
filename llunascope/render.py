@@ -203,9 +203,14 @@ def _graph_payload(company: str, seed_label: str, edges: list[Edge],
                    nodes: set[str]) -> dict:
     """Cytoscape.js element set for the interactive HTML graph.
 
-    Seed domains are the nodes no edge points at; hop-1 edges hang off a
-    single SEED meta-node (the pivot records their parent as 'SEED', never
-    a specific seed domain — same convention as the mermaid export).
+    The pivot records hop-1 parents as the seed domain itself (e.g.
+    via='yahoo.com' — see test_pivot.py), NOT as 'SEED': the frontier
+    carries 'SEED' only as a label, while Edge() is built with
+    via=domain. Seed domains are not graph nodes (the SEED meta-node
+    represents them), so a hop-1 edge's source must be rewritten to
+    'SEED' here — otherwise Cytoscape.js refuses the whole graph
+    ("Can not create edge ... with nonexistant source") and the report
+    renders an empty canvas with no error message.
     """
     targets = {e.target for e in edges}
     seed_domains = sorted(n for n in nodes if n not in targets)
@@ -218,9 +223,10 @@ def _graph_payload(company: str, seed_label: str, edges: list[Edge],
         "data": {"id": "SEED", "label": f"\U0001f319 {seed_label}",
                  "kind": "seed", "seed_domains": seed_domains},
     }]
-    # Seed domains are NOT separate nodes: they have no graded edges (the
-    # pivot records hop-1 parents as 'SEED'), so standalone seed nodes would
-    # dangle unconnected and vanish under the confidence filter. The SEED
+    # Seed domains are NOT separate nodes: they have no graded edges of
+    # their own (hop-1 edges hang off them, rewritten to the SEED
+    # meta-node above), so standalone seed nodes would dangle
+    # unconnected and vanish under the confidence filter. The SEED
     # meta-node represents them; its details panel lists them.
     for n in sorted(nodes):
         if n in seed_domains:
@@ -230,7 +236,8 @@ def _graph_payload(company: str, seed_label: str, edges: list[Edge],
                                   "confidence": max_conf.get(n, 0.0)}})
     for i, e in enumerate(sorted(edges, key=lambda x: -x.confidence)):
         elements.append({"data": {
-            "id": f"e{i}", "source": e.via, "target": e.target,
+            "id": f"e{i}", "source": "SEED" if e.via in seed_domains else e.via,
+            "target": e.target,
             "confidence": e.confidence, "hop": e.hop,
             "penalized": e.penalized,
             "evidence": [{"signal": x.signal, "detail": x.detail,
@@ -338,7 +345,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }).join('');
     return '<ul>' + items + '</ul>';
   }
-  var cy = cytoscape({
+  var cy;
+  try {
+    cy = cytoscape({
     container: document.getElementById('cy'),
     elements: payload.elements,
     style: [
@@ -368,7 +377,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     ],
     layout: { name: 'cose', animate: true, randomize: false },
     wheelSensitivity: 0.3
-  });
+    });
+  } catch (err) {
+    // A bad payload (e.g. an edge pointing at a missing node) used to
+    // kill the whole graph silently, leaving an empty canvas. Surface it.
+    fallback.textContent = 'Graph failed to render (' + err.message
+      + ') — the evidence table below still lists every edge.';
+    fallback.style.display = 'block';
+    return;
+  }
   cy.edges().forEach(function (e) { e.addClass('conf-' + band(e.data('confidence'))); });
   cy.nodes('[kind="domain"]').forEach(function (n) { n.addClass('conf-' + band(n.data('confidence'))); });
   function updateCounts() {
@@ -496,9 +513,17 @@ def to_html(company: str, seed_label: str, edges: list[Edge], nodes: set[str],
             f"<td class='conf'>{e.confidence:g}%</td><td>{evs}</td></tr>")
     graph_json = _safe_json_for_script(
         _graph_payload(company, seed_label, edges, nodes))
-    return (HTML_TEMPLATE
-            .replace("%%COMPANY_HTML%%", html.escape(company))
-            .replace("%%GRAPH_JSON%%", graph_json)
-            .replace("%%ROWS%%", "\n".join(rows))
-            .replace("%%N_NODES%%", str(len(nodes)))
-            .replace("%%N_EDGES%%", str(len(edges))))
+    # Single-pass substitution: sequential str.replace() rescans text it
+    # already inserted, so a company/evidence string containing a token
+    # (e.g. '%%ROWS%%') was rewritten by a later pass — the title filled
+    # with table rows + graph JSON and the embedded JSON payload no longer
+    # round-tripped the real strings. One regex pass never rescans.
+    subs = {
+        "%%COMPANY_HTML%%": html.escape(company),
+        "%%GRAPH_JSON%%": graph_json,
+        "%%ROWS%%": "\n".join(rows),
+        "%%N_NODES%%": str(len(nodes)),
+        "%%N_EDGES%%": str(len(edges)),
+    }
+    return re.sub(r"%%(COMPANY_HTML|GRAPH_JSON|ROWS|N_NODES|N_EDGES)%%",
+                  lambda m: subs[m.group(0)], HTML_TEMPLATE)

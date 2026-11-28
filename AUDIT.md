@@ -346,3 +346,91 @@ exploration tool instead of a static picture, with the evidence table as
 the offline fallback. The one thing not verified here is rendering in a
 real browser (headless check only) — the Cytoscape.js API usage follows
 its documented element/style/event surface.
+
+## Audit — Saturday 2026-11-28 (v1.2.0 → v1.2.1, deep round: real browser)
+
+First audit round to run the report in a **real browser** (headless
+Chromium + puppeteer-core, real Cytoscape.js 3.30.4, real mouse clicks)
+instead of the fake-cytoscape/fake-DOM smoke test the build used — and
+it caught a P1 the build's tests could not see.
+
+### Finding P1 — the interactive graph was dead on every real report
+
+`_graph_payload()` assumed "the pivot records hop-1 parents as 'SEED',
+never a specific seed domain". False: `pivot()` builds edges with
+`via=domain`, so at hop 0 the parent is the seed domain itself
+(`via='yahoo.com'`; `test_pivot.py` asserts `e.via == 'seed.com'`).
+Seed domains are not graph nodes — only the SEED meta-node is — so
+every hop-1 edge pointed at a nonexistent node. Real Cytoscape.js
+throws on init (`Can not create edge 'e1' with nonexistant source
+'yahoo.com'`): empty canvas, blank counts, no error shown (the
+fallback message only covered CDN load failure, not init failure).
+The build's tests all hand-built edges with `via='SEED'`, and the fake
+cytoscape never validates endpoints, so nothing caught it. **Every
+real report shipped with a dead graph**; only the evidence table below
+still worked.
+
+Fix: `_graph_payload()` rewrites an edge source to `SEED` when its
+`via` is a seed domain (hop-2+ sources are real nodes and pass
+through). Defence in depth: the controller now wraps the Cytoscape
+init in try/catch and shows the fallback message with the error instead
+of a silent empty canvas. Verified in the real browser with
+pivot-shaped data: graph renders (3 nodes · 3 edges), SEED node lists
+its outgoing edge, clicks/slider/layouts/search/reset all work, zero
+console errors.
+
+### Finding P2 — template-token collision corrupted report data
+
+`to_html()` substituted template tokens with sequential
+`str.replace()`, which rescans text already inserted. A company name
+or evidence detail containing a token was rewritten by a later pass:
+company `%%ROWS%% %%GRAPH_JSON%% %%N_NODES%%` filled the `<title>`/`<h1>`
+with table rows + the full graph JSON, mutated the embedded JSON
+payload's `company` field (no longer equal to the input), and an
+evidence detail `saw %%N_NODES%% nodes` became `saw 2 nodes` in both
+the JSON payload and the table. No XSS (all substituted values are
+escaped and the JSON still parsed), but the report no longer
+round-tripped its own data — the same bug class fixed in llabyrinth
+R2. Fix: single-pass `re.sub` over the template, so inserted values
+are never rescanned.
+
+### Verified clean (real browser + adversarial probes)
+
+- XSS: hostile company/seed/evidence (`</script><script>alert(1)`,
+  `<img src=x onerror=alert(2)>`, `<b>` + quotes, U+2028/U+2029) —
+  0 alerts, 0 console errors, 0 live `<img>`/`<script>` in the details
+  panel (payloads appear only as escaped text); script-tag count stays
+  3; payload decodes back exactly from the JSON block.
+- Real-click functional suite on realistic data: SEED/node/edge taps
+  show the right evidence; all 4 layouts switch cleanly; slider at
+  50% hides weak edges + orphans their nodes (2 nodes · 1 edge), at
+  99% hides everything except SEED (0 nodes · 0 edges); search
+  highlights + centres + shows details; Reset restores counts and
+  clears search/slider; Fit works. Screenshot-verified render.
+- Deliberately dangling payload (edge source `ghost.example`) now
+  shows the fallback message instead of a silent empty canvas.
+- Edge cases probed clean: empty graph (SEED-only payload), empty
+  nodes set, duplicate targets (node confidence = max edge), unique
+  edge ids, confidence band boundaries, `%%COMPANY_HTML%%` self-token
+  (survives literally, by design of single-pass substitution).
+
+### Tests
+
+Suite 140 → **143 tests, all green** (local + fresh GitHub clone):
++3 in `tests/test_render.py` — pivot-shaped edges rewrite hop-1
+sources to SEED with no dangling endpoint; template tokens round-trip
+verbatim in company + evidence + title; the inline controller passes
+`node --check` (guards the new try/catch syntax).
+
+### Result
+
+Version 1.2.0 → **1.2.1**.
+
+### Verdict
+
+v1.2.1 solid. The headline v1.2.0 feature now actually works on real
+reports — this round's real-browser check closed the exact gap the
+build's own AUDIT.md flagged as unverified ("not verified in a real
+browser"). Remaining honest limitation: the graph still needs the
+jsdelivr CDN at view time (evidence table is the offline fallback);
+the report was verified at 1280×900 desktop viewport only.

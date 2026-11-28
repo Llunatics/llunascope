@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llunascope"
-version = "1.2.0"
+version = "1.2.1"
 description = "From a single company name to every forgotten subsidiary and shadow root domain. Zero packets. Zero API keys. Full evidence chains."
 readme = "README.md"
 requires-python = ">=3.10"

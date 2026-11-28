@@ -212,6 +212,82 @@ class TestHtmlGraph(unittest.TestCase):
         data = json.loads(h[start:end])
         self.assertEqual(data["company"], evil)
 
+    def test_pivot_shaped_edges_rewrite_hop1_source_to_seed(self):
+        # The real pivot records hop-1 parents as the SEED DOMAIN (via=
+        # 'yahoo.com'), never as 'SEED' (pivot.py builds Edge(rd, domain,
+        # hop+1); test_pivot.py asserts e.via == 'seed.com'). Seed domains
+        # are not graph nodes, so the payload must rewrite such sources
+        # to the SEED meta-node — Cytoscape.js throws on an edge whose
+        # source node does not exist and the whole graph renders empty.
+        edges = [_edge("aol.com", "yahoo.com", hop=1),
+                 _edge("cs.com", "aol.com", hop=2,
+                       signals=("san_overlap", "asn_match"))]
+        h = render.to_html("Yahoo", "yahoo.com", edges,
+                           {"yahoo.com", "aol.com", "cs.com"}, {})
+        marker = '<script type="application/json" id="llunascope-graph">'
+        start = h.index(marker) + len(marker)
+        end = h.index("</script>", start)
+        data = json.loads(h[start:end])
+        ids = {e["data"]["id"] for e in data["elements"]}
+        for el in data["elements"]:
+            d = el["data"]
+            if "source" in d:
+                self.assertIn(d["source"], ids,
+                              f"edge {d['id']} dangles: source {d['source']!r} is not a node")
+                self.assertIn(d["target"], ids)
+        by_target = {e["data"]["target"]: e["data"] for e in data["elements"]
+                     if "target" in e["data"]}
+        self.assertEqual(by_target["aol.com"]["source"], "SEED")
+
+    def test_template_tokens_round_trip(self):
+        # A company/evidence string containing a template token must come
+        # back verbatim: sequential str.replace() used to rescan inserted
+        # text, so '%%ROWS%%' in the company filled the title with table
+        # rows + graph JSON and rewrote the embedded JSON payload.
+        evil = "%%ROWS%% %%GRAPH_JSON%% %%N_NODES%% %%N_EDGES%% %%COMPANY_HTML%%"
+        e = Edge("aol.com", "SEED", 1)
+        e.add("san_overlap", "saw " + evil)
+        e = e.finalize()
+        h = render.to_html(evil, "seed.com", [e], {"seed.com", "aol.com"}, {})
+        title = h.split("<title>")[1].split("</title>")[0]
+        self.assertNotIn("<tr>", title)
+        self.assertNotIn("elements", title)
+        marker = '<script type="application/json" id="llunascope-graph">'
+        start = h.index(marker) + len(marker)
+        end = h.index("</script>", start)
+        data = json.loads(h[start:end])
+        self.assertEqual(data["company"], evil)
+        self.assertEqual(data["elements"][-1]["data"]["evidence"][0]["detail"],
+                         "saw " + evil)
+
+    def test_inline_controller_parses(self):
+        # Guard the controller JS (incl. the try/catch around the
+        # Cytoscape init) against syntax errors: extract the last
+        # <script> block and run node --check on it.
+        import subprocess
+        import tempfile
+        import os
+        scripts = []
+        rest = self.html
+        while "<script>" in rest:
+            s = rest.index("<script>") + len("<script>")
+            e = rest.index("</script>", s)
+            scripts.append(rest[s:e])
+            rest = rest[e + len("</script>"):]
+        self.assertTrue(scripts)
+        with tempfile.NamedTemporaryFile("w", suffix=".js",
+                                        delete=False) as f:
+            f.write(scripts[-1])
+            path = f.name
+        try:
+            proc = subprocess.run(["node", "--check", path],
+                                  capture_output=True, text=True)
+        except FileNotFoundError:
+            self.skipTest("node not available")
+        finally:
+            os.unlink(path)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
     def test_empty_graph_still_valid(self):
         h = render.to_html("Acme", "acme.com", [], {"acme.com"}, {})
         marker = '<script type="application/json" id="llunascope-graph">'
